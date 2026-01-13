@@ -10,10 +10,10 @@ from flask import Flask
 # =======================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-PORT = int(os.environ.get("PORT", 10000))  # مهم لــ Render
+PORT = int(os.environ.get("PORT", 10000))
 
 # =======================
-# Web Server (عشان Render)
+# Web Server (Render)
 # =======================
 app = Flask(__name__)
 
@@ -25,26 +25,47 @@ def run_web():
     app.run(host="0.0.0.0", port=PORT)
 
 # =======================
-# أزواج Olymp Trade
+# أزواج Olymp Trade (نفس الكتابة)
 # =======================
-PAIRS = {
+PAIRS = [
+    "Bitcoin OTC", "Ethereum OTC", "Litecoin OTC",
+    "Ripple OTC", "Solana OTC",
+
+    "NZD/USD OTC", "USD/CHF OTC", "AUD/CAD OTC",
+    "AUD/CHF OTC", "AUD/JPY OTC", "AUD/NZD OTC",
+
+    "CAD/CHF OTC", "CAD/JPY OTC", "CHF/JPY OTC",
+
+    "EUR/AUD OTC", "EUR/CAD OTC", "EUR/CHF OTC",
+    "EUR/GBP OTC"
+]
+
+PAIR_MAP = {
     "Bitcoin OTC": "BTCUSDT",
     "Ethereum OTC": "ETHUSDT",
     "Litecoin OTC": "LTCUSDT",
     "Ripple OTC": "XRPUSDT",
     "Solana OTC": "SOLUSDT",
-    "EUR/GBP OTC": "EURGBP",
-    "EUR/CHF OTC": "EURCHF",
-    "AUD/JPY OTC": "AUDJPY",
+    "NZD/USD OTC": "NZDUSDT",
     "USD/CHF OTC": "USDCHF",
-    "CAD/JPY OTC": "CADJPY"
+    "AUD/CAD OTC": "AUDCAD",
+    "AUD/CHF OTC": "AUDCHF",
+    "AUD/JPY OTC": "AUDJPY",
+    "AUD/NZD OTC": "AUDNZD",
+    "CAD/CHF OTC": "CADCHF",
+    "CAD/JPY OTC": "CADJPY",
+    "CHF/JPY OTC": "CHFJPY",
+    "EUR/AUD OTC": "EURAUD",
+    "EUR/CAD OTC": "EURCAD",
+    "EUR/CHF OTC": "EURCHF",
+    "EUR/GBP OTC": "EURGBP"
 }
 
 selected_pair = None
 running = False
 
 # =======================
-# Telegram
+# Telegram helpers
 # =======================
 def send_message(text, keyboard=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -53,16 +74,25 @@ def send_message(text, keyboard=None):
         "text": text,
         "reply_markup": keyboard
     }
-    requests.post(url, json=payload)
+    requests.post(url, json=payload, timeout=5)
 
 def send_pairs_buttons():
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": pair, "callback_data": pair}]
-            for pair in PAIRS.keys()
-        ]
-    }
-    send_message("📊 اختر الزوج:", keyboard)
+    keyboard = []
+    row = []
+
+    for i, pair in enumerate(PAIRS, 1):
+        row.append({"text": pair, "callback_data": pair})
+        if i % 3 == 0:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    send_message(
+        "📊 اختر الزوج (لوحة مفاتيح):",
+        {"inline_keyboard": keyboard}
+    )
 
 # =======================
 # Market Data
@@ -70,7 +100,7 @@ def send_pairs_buttons():
 def get_klines(symbol, interval="1m", limit=50):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    return requests.get(url, params=params).json()
+    return requests.get(url, params=params, timeout=5).json()
 
 def rsi(closes, period=14):
     deltas = np.diff(closes)
@@ -88,25 +118,30 @@ def rsi(closes, period=14):
 # =======================
 def signal_loop():
     global running
+    last_signal = None
+
     while running:
         try:
-            symbol = PAIRS[selected_pair]
+            symbol = PAIR_MAP[selected_pair]
             klines = get_klines(symbol)
             closes = np.array([float(k[4]) for k in klines])
             r = rsi(closes)
 
-            if r < 30:
+            if r < 30 and last_signal != "BUY":
                 send_message(f"📈 BUY\n{selected_pair}\nRSI: {round(r,2)}")
-            elif r > 70:
+                last_signal = "BUY"
+
+            elif r > 70 and last_signal != "SELL":
                 send_message(f"📉 SELL\n{selected_pair}\nRSI: {round(r,2)}")
+                last_signal = "SELL"
 
         except Exception as e:
-            print("Error:", e)
+            print("Signal error:", e)
 
         time.sleep(60)
 
 # =======================
-# Telegram Listener
+# Telegram Listener (سريع)
 # =======================
 def listen_updates():
     global selected_pair, running
@@ -115,22 +150,29 @@ def listen_updates():
     send_pairs_buttons()
 
     while True:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-        r = requests.get(url, params={"offset": offset}).json()
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 1},
+                timeout=5
+            ).json()
 
-        for update in r.get("result", []):
-            offset = update["update_id"] + 1
+            for update in r.get("result", []):
+                offset = update["update_id"] + 1
 
-            if "callback_query" in update:
-                selected_pair = update["callback_query"]["data"]
-                running = True
-                send_message(f"✅ تم اختيار {selected_pair}")
-                threading.Thread(target=signal_loop, daemon=True).start()
+                if "callback_query" in update:
+                    selected_pair = update["callback_query"]["data"]
+                    running = True
+                    send_message(f"✅ تم اختيار:\n{selected_pair}")
+                    threading.Thread(target=signal_loop, daemon=True).start()
 
-        time.sleep(2)
+        except Exception as e:
+            print("Update error:", e)
+
+        time.sleep(0.3)
 
 # =======================
-# Start Everything
+# Start
 # =======================
 threading.Thread(target=listen_updates, daemon=True).start()
 run_web()
