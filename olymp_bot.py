@@ -2,10 +2,10 @@ import os
 import requests
 import threading
 import numpy as np
+import json
 from flask import Flask
+from websocket import create_connection
 import time
-import hmac
-import hashlib
 
 # =======================
 # Environment Variables
@@ -17,12 +17,13 @@ BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 PORT = int(os.environ.get("PORT", 10000))
 
 # =======================
-# Flask Web Server (Render يحتاج Port)
+# Flask Web Server
 # =======================
 app = Flask(__name__)
 @app.route("/")
 def home():
     return "Bot is running ✅"
+
 def run_web():
     app.run(host="0.0.0.0", port=PORT)
 
@@ -87,7 +88,7 @@ def send_pairs_buttons():
     send_message("📊 اختر الزوج (لوحة مفاتيح):", {"inline_keyboard": keyboard})
 
 # =======================
-# RSI Calculation
+# RSI calculation
 # =======================
 def rsi(closes, period=14):
     deltas = np.diff(closes)
@@ -101,44 +102,38 @@ def rsi(closes, period=14):
     return 100 - (100 / (1 + rs))
 
 # =======================
-# Binance API call مع مفاتيح
-# =======================
-def get_klines(symbol, interval="1m", limit=50):
-    url = "https://api.binance.com/api/v3/klines"
-    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    resp = requests.get(url, headers=headers, params=params, timeout=5)
-    return resp.json()
-
-# =======================
-# Signal Loop سريع جدًا
+# Signal Loop using WebSocket
 # =======================
 def signal_loop():
     global running
     last_signal = None
+    symbol = PAIR_MAP[selected_pair].lower()
+    ws_url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_1m"
+
     while running:
         try:
-            symbol = PAIR_MAP[selected_pair]
-            klines = get_klines(symbol)
-            closes = np.array([float(k[4]) for k in klines])
-            r = rsi(closes)
-
-            # إشارات BUY / SELL
-            if r < 30 and last_signal != "BUY":
-                send_message(f"📈 BUY\n{selected_pair}\nRSI: {round(r,2)}")
-                last_signal = "BUY"
-            elif r > 70 and last_signal != "SELL":
-                send_message(f"📉 SELL\n{selected_pair}\nRSI: {round(r,2)}")
-                last_signal = "SELL"
-
+            ws = create_connection(ws_url)
+            while running:
+                result = ws.recv()
+                data = json.loads(result)
+                kline = data['k']
+                if kline['x']:  # شمعة مكتملة
+                    close_price = float(kline['c'])
+                    # نحفظ آخر 50 سعر
+                    closes = [close_price]*50
+                    r = rsi(np.array(closes))
+                    if r < 30 and last_signal != "BUY":
+                        send_message(f"📈 BUY\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة شراء الآن")
+                        last_signal = "BUY"
+                    elif r > 70 and last_signal != "SELL":
+                        send_message(f"📉 SELL\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة بيع الآن")
+                        last_signal = "SELL"
         except Exception as e:
-            print("Signal error:", e)
-
-        # 🔹 سريع: تحديث كل 3 ثواني
-        time.sleep(3)
+            print("WS error:", e)
+            time.sleep(1)
 
 # =======================
-# Telegram Listener سريع
+# Telegram listener سريع
 # =======================
 def listen_updates():
     global selected_pair, running
