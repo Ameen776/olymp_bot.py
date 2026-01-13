@@ -1,120 +1,142 @@
-import os
-import json
-import time
-import threading
-import requests
+import os, json, time, threading
 import numpy as np
+import requests
 from websocket import WebSocketApp
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# ================== ENV ==================
+# ========= ENV =========
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 
-BINANCE_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET = os.getenv("BINANCE_API_SECRET")
+# نستخدم Binance كمؤشر حركة فقط
+BINANCE_SYMBOL = "BTCUSDT"  # مرجع الحركة لــ Bitcoin OTC
 
-# ================== STATE ==================
+# ========= STATE =========
 state = {
-    "symbol": None,
-    "duration": None,
-    "prices": [],
+    "duration": None,     # 15/30/45/60
+    "prices": [],         # آخر ticks
     "last_signal": None,
-    "ws": None
+    "ws": None,
+    "last_sent_ts": 0
 }
 
-# ================== UTIL ==================
-def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
+# ========= HELPERS =========
+def send_msg(text):
     try:
-        requests.post(url, data=payload, timeout=5)
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": text},
+            timeout=5
+        )
     except:
         pass
 
-def calculate_rsi(prices, period=14):
-    if len(prices) < period+1:
+def rsi(prices, period=14):
+    if len(prices) < period + 1:
         return None
     deltas = np.diff(np.array(prices))
-    gains = np.where(deltas>0,deltas,0)
-    losses = np.where(deltas<0,-deltas,0)
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    avg_gain = gains[-period:].mean()
+    avg_loss = losses[-period:].mean()
     if avg_loss == 0:
         return 100
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ================== BINANCE WS ==================
+def momentum(prices, lookback=5):
+    if len(prices) < lookback + 1:
+        return None
+    return prices[-1] - prices[-1 - lookback]
+
+# ========= BINANCE WS =========
 def on_message(ws, message):
     data = json.loads(message)
     price = float(data["p"])
     state["prices"].append(price)
-    if len(state["prices"]) > 50:
-        state["prices"] = state["prices"][-50:]
-    check_signal(price)
+    if len(state["prices"]) > 60:
+        state["prices"] = state["prices"][-60:]
+    check_signal()
 
-def on_error(ws, error):
-    print("WS ERROR:", error)
+def on_error(ws, err):
+    print("WS ERROR:", err)
 
-def on_close(ws):
-    print("WS CLOSED")
-
-def start_ws(symbol):
+def start_ws():
     if state["ws"]:
-        try:
-            state["ws"].close()
-        except:
-            pass
-    url = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@trade"
-    ws = WebSocketApp(url, on_message=on_message, on_error=on_error, on_close=on_close)
+        try: state["ws"].close()
+        except: pass
+    url = f"wss://stream.binance.com:9443/ws/{BINANCE_SYMBOL.lower()}@trade"
+    ws = WebSocketApp(url, on_message=on_message, on_error=on_error)
     state["ws"] = ws
     threading.Thread(target=ws.run_forever, daemon=True).start()
 
-# ================== SIGNAL ==================
-def check_signal(current_price):
-    rsi_value = calculate_rsi(state["prices"])
-    if rsi_value is None or state["duration"] is None:
+# ========= SIGNAL LOGIC =========
+def check_signal():
+    if state["duration"] is None:
         return
 
-    # BUY signal
-    if rsi_value < 30 and state["last_signal"] != "BUY":
-        send_message(f"🟢 BUY\nزوج: {state['symbol']}\nمدة الصفقة: {state['duration']} ثانية\nRSI: {rsi_value:.2f}")
+    prices = state["prices"]
+    r = rsi(prices)
+    m = momentum(prices)
+
+    if r is None or m is None:
+        return
+
+    # فلترة سبام: لا نرسل إشارتين خلال 10 ثواني
+    now = time.time()
+    if now - state["last_sent_ts"] < 10:
+        return
+
+    # شروط قوية مناسبة للـ OTC السريع
+    if r < 30 and m > 0 and state["last_signal"] != "BUY":
+        send_msg(
+            f"🟢 BUY\n"
+            f"Olymp Trade: Bitcoin OTC\n"
+            f"المدة: {state['duration']} ثانية\n"
+            f"RSI: {r:.2f} | Momentum: {m:.2f}\n"
+            f"⏱ ادخل فورًا"
+        )
         state["last_signal"] = "BUY"
+        state["last_sent_ts"] = now
 
-    # SELL signal
-    elif rsi_value > 70 and state["last_signal"] != "SELL":
-        send_message(f"🔴 SELL\nزوج: {state['symbol']}\nمدة الصفقة: {state['duration']} ثانية\nRSI: {rsi_value:.2f}")
+    elif r > 70 and m < 0 and state["last_signal"] != "SELL":
+        send_msg(
+            f"🔴 SELL\n"
+            f"Olymp Trade: Bitcoin OTC\n"
+            f"المدة: {state['duration']} ثانية\n"
+            f"RSI: {r:.2f} | Momentum: {m:.2f}\n"
+            f"⏱ ادخل فورًا"
+        )
         state["last_signal"] = "SELL"
+        state["last_sent_ts"] = now
 
-# ================== TELEGRAM ==================
-def keyboard(rows):
-    return {"keyboard": rows, "resize_keyboard": True}
-
+# ========= TELEGRAM =========
 def start(update: Update, context: CallbackContext):
-    kb = [["BTCUSDT", "ETHUSDT"], ["BNBUSDT", "SOLUSDT"]]
-    update.message.reply_text("اختر الزوج:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+    kb = [["15 ثانية", "30 ثانية"], ["45 ثانية", "60 ثانية"]]
+    update.message.reply_text(
+        "اختر مدة الصفقة لــ Bitcoin OTC:",
+        reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
+    )
+    # نبدأ WebSocket فورًا
+    start_ws()
 
-def handle_message(update: Update, context: CallbackContext):
+def handle_text(update: Update, context: CallbackContext):
     text = update.message.text
-
-    if text.endswith("USDT"):
-        state["symbol"] = text
-        start_ws(text)
-        kb = [["15 ثانية", "30 ثانية"], ["45 ثانية", "60 ثانية"]]
-        update.message.reply_text(f"✅ تم اختيار {text}\nاختر مدة الصفقة:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return
-
     if "ثانية" in text:
         state["duration"] = int(text.split()[0])
         state["last_signal"] = None
-        update.message.reply_text(f"⏱ سيتم إرسال الإشارات فور تحققها لمدة {state['duration']} ثانية\n📡 البوت يراقب السوق الآن")
+        update.message.reply_text(
+            f"✅ تم الضبط\n"
+            f"Olymp Trade: Bitcoin OTC\n"
+            f"المدة: {state['duration']} ثانية\n"
+            f"📡 مراقبة لحظية بدأت"
+        )
 
-# ================== MAIN ==================
+# ========= MAIN =========
 updater = Updater(BOT_TOKEN, use_context=True)
 dp = updater.dispatcher
 dp.add_handler(CommandHandler("start", start))
-dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
 updater.start_polling()
 updater.idle()
