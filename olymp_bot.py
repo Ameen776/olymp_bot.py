@@ -3,39 +3,43 @@ import requests
 import numpy as np
 
 # =========================
-# Environment Variables
+# Telegram Environment Variables
 # =========================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# تحقق من المتغيرات
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    raise Exception("❌ تأكد من إضافة TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في Render")
+    raise Exception("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
 
 # =========================
-# أزواج مدعومة فعليًا من Binance
+# أزواج ثابتة (لا تعدلها)
 # =========================
 PAIRS = {
-    "Bitcoin OTC": "BTCUSDT",
-    "Ethereum OTC": "ETHUSDT",
-    "Litecoin OTC": "LTCUSDT",
-    "Ripple OTC": "XRPUSDT",
-    "Solana OTC": "SOLUSDT"
+    "Bitcoin OTC": "BTC",
+    "Ethereum OTC": "ETH",
+    "Litecoin OTC": "LTC",
+    "Ripple OTC": "XRP",
+    "Solana OTC": "SOL"
 }
 
 # =========================
-# جلب الشموع من Binance
+# جلب بيانات الأسعار (بديل Binance – يعمل على Render)
 # =========================
-def get_klines(symbol, interval="1m", limit=50):
-    url = "https://api.binance.com/api/v3/klines"
+def get_klines(symbol, limit=50):
+    url = "https://min-api.cryptocompare.com/data/v2/histominute"
     params = {
-        "symbol": symbol,
-        "interval": interval,
+        "fsym": symbol,
+        "tsym": "USDT",
         "limit": limit
     }
-    r = requests.get(url, params=params, timeout=10)
+    r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+
+    if data.get("Response") != "Success":
+        return []
+
+    return data["Data"]["Data"]
 
 # =========================
 # حساب RSI (آمن)
@@ -58,47 +62,32 @@ def rsi(closes, period=14):
     return 100 - (100 / (1 + rs))
 
 # =========================
-# إرسال إشارة تيليجرام
+# إرسال رسالة تيليجرام
 # =========================
-def send_signal(asset, direction, duration, reason):
-    message = f"""
-🚨 إشارة تداول (OTC)
-
-الأصل: {asset}
-الاتجاه: {direction}
-المدة: {duration}
-الدخول: الآن
-
-📊 التحليل:
-{reason}
-"""
+def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
+        "text": text
     }
     requests.post(url, data=payload, timeout=10)
 
 # =========================
-# التحليل الرئيسي (بدون Loop)
+# التحليل
 # =========================
 def analyze():
+    signals_sent = 0
+
     for asset, symbol in PAIRS.items():
         try:
             klines = get_klines(symbol)
 
-            # تحقق من صحة البيانات
-            if not isinstance(klines, list) or len(klines) < 20:
-                print(f"⚠️ بيانات غير كافية لـ {asset}")
+            if not klines or len(klines) < 20:
                 continue
 
-            closes = []
-            for k in klines:
-                if isinstance(k, list) and len(k) > 4:
-                    closes.append(float(k[4]))
+            closes = [float(k["close"]) for k in klines if "close" in k]
 
             if len(closes) < 15:
-                print(f"⚠️ شموع غير كافية لـ {asset}")
                 continue
 
             closes = np.array(closes)
@@ -108,12 +97,30 @@ def analyze():
                 continue
 
             if r < 30:
-                send_signal(asset, "📈 UP", "30 ثانية", "RSI تشبع بيعي + احتمال ارتداد")
+                send_message(
+                    f"🚨 إشارة تداول\n\n"
+                    f"الأصل: {asset}\n"
+                    f"الاتجاه: 📈 UP\n"
+                    f"المدة: 30 ثانية\n\n"
+                    f"التحليل:\nRSI تشبع بيعي"
+                )
+                signals_sent += 1
+
             elif r > 70:
-                send_signal(asset, "📉 DOWN", "30 ثانية", "RSI تشبع شرائي + احتمال انعكاس")
+                send_message(
+                    f"🚨 إشارة تداول\n\n"
+                    f"الأصل: {asset}\n"
+                    f"الاتجاه: 📉 DOWN\n"
+                    f"المدة: 30 ثانية\n\n"
+                    f"التحليل:\nRSI تشبع شرائي"
+                )
+                signals_sent += 1
 
         except Exception as e:
-            print(f"❌ خطأ في {asset}: {e}")
+            send_message(f"⚠️ خطأ في تحليل {asset}\n{e}")
+
+    if signals_sent == 0:
+        send_message("ℹ️ لا توجد فرص تداول آمنة حاليًا")
 
 # =========================
 # تشغيل مرة واحدة (متوافق مع Render)
