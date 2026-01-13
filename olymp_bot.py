@@ -1,129 +1,157 @@
 import os
 import requests
 import numpy as np
+import time
 
 # =========================
-# Telegram Environment Variables
+# Telegram config
 # =========================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    raise Exception("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+if not BOT_TOKEN or not CHAT_ID:
+    raise Exception("Missing TELEGRAM config")
 
-# =========================
-# أزواج ثابتة (لا تعدلها)
-# =========================
-PAIRS = {
-    "Bitcoin OTC": "BTC",
-    "Ethereum OTC": "ETH",
-    "Litecoin OTC": "LTC",
-    "Ripple OTC": "XRP",
-    "Solana OTC": "SOL"
-}
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # =========================
-# جلب بيانات الأسعار (بديل Binance – يعمل على Render)
+# الزوج المختار (افتراضي)
+# =========================
+selected_pair = {"symbol": "BTC", "name": "Bitcoin OTC"}
+
+# =========================
+# جلب بيانات الأسعار (CryptoCompare)
 # =========================
 def get_klines(symbol, limit=50):
     url = "https://min-api.cryptocompare.com/data/v2/histominute"
-    params = {
-        "fsym": symbol,
-        "tsym": "USDT",
-        "limit": limit
-    }
+    params = {"fsym": symbol, "tsym": "USDT", "limit": limit}
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
-
     if data.get("Response") != "Success":
         return []
-
     return data["Data"]["Data"]
 
 # =========================
-# حساب RSI (آمن)
+# RSI
 # =========================
 def rsi(closes, period=14):
     if len(closes) < period + 1:
         return None
-
     deltas = np.diff(closes)
     gain = np.maximum(deltas, 0)
     loss = np.abs(np.minimum(deltas, 0))
-
     avg_gain = np.mean(gain[-period:])
     avg_loss = np.mean(loss[-period:])
-
     if avg_loss == 0:
         return 100
-
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 # =========================
-# إرسال رسالة تيليجرام
+# Telegram helpers
 # =========================
-def send_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text
-    }
-    requests.post(url, data=payload, timeout=10)
+def send(text):
+    requests.post(
+        f"{API_URL}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": text},
+        timeout=10
+    )
+
+def get_updates(offset=None):
+    params = {"timeout": 30}
+    if offset:
+        params["offset"] = offset
+    r = requests.get(f"{API_URL}/getUpdates", params=params, timeout=35)
+    return r.json()
 
 # =========================
-# التحليل
+# تحليل الزوج المختار فقط
 # =========================
-def analyze():
-    signals_sent = 0
+def analyze_pair():
+    klines = get_klines(selected_pair["symbol"])
+    if not klines or len(klines) < 20:
+        send("⚠️ بيانات غير كافية للتحليل")
+        return
 
-    for asset, symbol in PAIRS.items():
-        try:
-            klines = get_klines(symbol)
+    closes = [float(k["close"]) for k in klines if "close" in k]
+    r = rsi(np.array(closes))
 
-            if not klines or len(klines) < 20:
+    if r is None:
+        send("⚠️ لم يتم حساب RSI")
+        return
+
+    if r < 30:
+        send(
+            f"🚨 إشارة تداول\n\n"
+            f"الأصل: {selected_pair['name']}\n"
+            f"الاتجاه: 📈 UP\n"
+            f"الوقت: 30 ثانية\n\n"
+            f"السبب: تشبع بيعي (RSI = {round(r,2)})"
+        )
+    elif r > 70:
+        send(
+            f"🚨 إشارة تداول\n\n"
+            f"الأصل: {selected_pair['name']}\n"
+            f"الاتجاه: 📉 DOWN\n"
+            f"الوقت: 30 ثانية\n\n"
+            f"السبب: تشبع شرائي (RSI = {round(r,2)})"
+        )
+    else:
+        send(f"ℹ️ لا يوجد تشبع حاليًا (RSI = {round(r,2)})")
+
+# =========================
+# أوامر تيليجرام
+# =========================
+def handle_command(text):
+    global selected_pair
+
+    if text.startswith("/start"):
+        send(
+            "✅ البوت جاهز\n\n"
+            "📌 الأوامر:\n"
+            "/pair BTC\n"
+            "/pair ETH\n"
+            "/check\n"
+            "/status"
+        )
+
+    elif text.startswith("/pair"):
+        parts = text.split()
+        if len(parts) == 2:
+            symbol = parts[1].upper()
+            selected_pair = {
+                "symbol": symbol,
+                "name": f"{symbol} OTC"
+            }
+            send(f"✅ تم اختيار الزوج: {symbol}")
+        else:
+            send("❌ استخدم: /pair BTC")
+
+    elif text.startswith("/status"):
+        send(f"📊 الزوج الحالي: {selected_pair['name']}")
+
+    elif text.startswith("/check"):
+        analyze_pair()
+
+# =========================
+# تشغيل البوت (Polling)
+# =========================
+def run_bot():
+    send("🤖 تم تشغيل البوت")
+    offset = None
+
+    while True:
+        updates = get_updates(offset)
+        for update in updates.get("result", []):
+            offset = update["update_id"] + 1
+            message = update.get("message")
+            if not message:
                 continue
+            text = message.get("text", "")
+            handle_command(text)
+        time.sleep(2)
 
-            closes = [float(k["close"]) for k in klines if "close" in k]
-
-            if len(closes) < 15:
-                continue
-
-            closes = np.array(closes)
-            r = rsi(closes)
-
-            if r is None:
-                continue
-
-            if r < 30:
-                send_message(
-                    f"🚨 إشارة تداول\n\n"
-                    f"الأصل: {asset}\n"
-                    f"الاتجاه: 📈 UP\n"
-                    f"المدة: 30 ثانية\n\n"
-                    f"التحليل:\nRSI تشبع بيعي"
-                )
-                signals_sent += 1
-
-            elif r > 70:
-                send_message(
-                    f"🚨 إشارة تداول\n\n"
-                    f"الأصل: {asset}\n"
-                    f"الاتجاه: 📉 DOWN\n"
-                    f"المدة: 30 ثانية\n\n"
-                    f"التحليل:\nRSI تشبع شرائي"
-                )
-                signals_sent += 1
-
-        except Exception as e:
-            send_message(f"⚠️ خطأ في تحليل {asset}\n{e}")
-
-    if signals_sent == 0:
-        send_message("ℹ️ لا توجد فرص تداول آمنة حاليًا")
-
-# =========================
-# تشغيل مرة واحدة (متوافق مع Render)
 # =========================
 if __name__ == "__main__":
-    analyze()
+    run_bot()
