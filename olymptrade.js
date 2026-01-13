@@ -1,53 +1,75 @@
 import os
-import requests
-import numpy as np
 import time
+import requests
+import threading
+import numpy as np
 
-# =========================
-# Telegram config
-# =========================
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# =======================
+# Environment Variables
+# =======================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-if not BOT_TOKEN or not CHAT_ID:
-    raise Exception("Missing TELEGRAM config")
+# =======================
+# أزواج Olymp Trade (نفس الكتابة)
+# =======================
+PAIRS = {
+    "Bitcoin OTC": "BTCUSDT",
+    "Ethereum OTC": "ETHUSDT",
+    "Litecoin OTC": "LTCUSDT",
+    "Ripple OTC": "XRPUSDT",
+    "Solana OTC": "SOLUSDT",
 
-TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+    "NZD/USD OTC": "NZDUSDT",
+    "USD/CHF OTC": "USDCHF",
+    "AUD/CAD OTC": "AUDCAD",
+    "AUD/CHF OTC": "AUDCHF",
+    "AUD/JPY OTC": "AUDJPY",
+    "AUD/NZD OTC": "AUDNZD",
 
-# =========================
-# الأزواج المتاحة
-# =========================
-AVAILABLE_PAIRS = {
-    "BTC": "Bitcoin OTC",
-    "ETH": "Ethereum OTC",
-    "LTC": "Litecoin OTC",
-    "XRP": "Ripple OTC",
-    "SOL": "Solana OTC"
+    "CAD/CHF OTC": "CADCHF",
+    "CAD/JPY OTC": "CADJPY",
+    "CHF/JPY OTC": "CHFJPY",
+
+    "EUR/AUD OTC": "EURAUD",
+    "EUR/CAD OTC": "EURCAD",
+    "EUR/CHF OTC": "EURCHF",
+    "EUR/GBP OTC": "EURGBP"
 }
 
-# الزوج المختار (افتراضي)
-selected_symbol = "BTC"
-last_signal = None  # لمنع التكرار
+selected_pair = None
+running = False
 
-# =========================
-# جلب بيانات السوق (بديل Binance)
-# =========================
-def get_klines(symbol, limit=50):
-    url = "https://min-api.cryptocompare.com/data/v2/histominute"
-    params = {"fsym": symbol, "tsym": "USDT", "limit": limit}
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("Response") != "Success":
-        return []
-    return data["Data"]["Data"]
+# =======================
+# Telegram helpers
+# =======================
+def send_message(text, keyboard=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "reply_markup": keyboard
+    }
+    requests.post(url, json=payload)
 
-# =========================
-# RSI
-# =========================
+def send_pairs_buttons():
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": pair, "callback_data": pair}]
+            for pair in PAIRS.keys()
+        ]
+    }
+    send_message("📊 اختر الزوج (مطابق لأوليمب تريد):", keyboard)
+
+# =======================
+# Market Data
+# =======================
+def get_klines(symbol, interval="1m", limit=50):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    return requests.get(url, params=params).json()
+
 def rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return None
     deltas = np.diff(closes)
     gain = np.maximum(deltas, 0)
     loss = np.abs(np.minimum(deltas, 0))
@@ -58,113 +80,68 @@ def rsi(closes, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# =========================
-# Telegram helpers
-# =========================
-def send(text):
-    requests.post(
-        f"{TG_API}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": text},
-        timeout=10
-    )
-
-def get_updates(offset=None):
-    params = {"timeout": 30}
-    if offset:
-        params["offset"] = offset
-    r = requests.get(f"{TG_API}/getUpdates", params=params, timeout=35)
-    return r.json()
-
-# =========================
-# تحليل تلقائي للزوج المختار
-# =========================
-def auto_analyze():
-    global last_signal
-
-    klines = get_klines(selected_symbol)
-    if len(klines) < 20:
-        return
-
-    closes = np.array([k["close"] for k in klines])
-    r = rsi(closes)
-    if r is None:
-        return
-
-    pair_name = AVAILABLE_PAIRS[selected_symbol]
-
-    if r < 30 and last_signal != "BUY":
-        send(
-            f"🚨 إشارة شراء\n\n"
-            f"الأصل: {pair_name}\n"
-            f"الوقت: الآن\n"
-            f"المدة: 1 دقيقة\n\n"
-            f"السبب: تشبع بيعي (RSI = {round(r,2)})"
-        )
-        last_signal = "BUY"
-
-    elif r > 70 and last_signal != "SELL":
-        send(
-            f"🚨 إشارة بيع\n\n"
-            f"الأصل: {pair_name}\n"
-            f"الوقت: الآن\n"
-            f"المدة: 1 دقيقة\n\n"
-            f"السبب: تشبع شرائي (RSI = {round(r,2)})"
-        )
-        last_signal = "SELL"
-
-# =========================
-# أوامر التحكم
-# =========================
-def handle_command(text):
-    global selected_symbol, last_signal
-
-    if text == "/start":
-        send(
-            "🤖 البوت يعمل تلقائيًا\n\n"
-            "اختر الزوج:\n"
-            "/pair BTC\n"
-            "/pair ETH\n"
-            "/pair LTC\n"
-            "/pair XRP\n"
-            "/pair SOL"
-        )
-
-    elif text.startswith("/pair"):
-        parts = text.split()
-        if len(parts) == 2 and parts[1] in AVAILABLE_PAIRS:
-            selected_symbol = parts[1]
-            last_signal = None
-            send(f"✅ تم اختيار الزوج: {AVAILABLE_PAIRS[selected_symbol]}")
-        else:
-            send("❌ زوج غير مدعوم")
-
-# =========================
-# تشغيل البوت (Auto + Commands)
-# =========================
-def run():
-    send("✅ تم تشغيل البوت – مراقبة تلقائية")
-    offset = None
-
-    while True:
+# =======================
+# Signal Loop
+# =======================
+def signal_loop():
+    global running
+    while running:
         try:
-            # تحليل تلقائي
-            auto_analyze()
+            symbol = PAIRS[selected_pair]
+            klines = get_klines(symbol)
+            closes = np.array([float(k[4]) for k in klines])
+            r = rsi(closes)
 
-            # استقبال أوامر
-            updates = get_updates(offset)
-            for u in updates.get("result", []):
-                offset = u["update_id"] + 1
-                msg = u.get("message", {})
-                text = msg.get("text")
-                if text:
-                    handle_command(text)
+            if r < 30:
+                send_message(
+                    f"📈 BUY\n"
+                    f"الأصل: {selected_pair}\n"
+                    f"RSI: {round(r,2)}\n"
+                    f"الدخول: الآن\n"
+                    f"المدة: 30 ثانية"
+                )
 
-            time.sleep(60)  # فحص كل دقيقة
+            elif r > 70:
+                send_message(
+                    f"📉 SELL\n"
+                    f"الأصل: {selected_pair}\n"
+                    f"RSI: {round(r,2)}\n"
+                    f"الدخول: الآن\n"
+                    f"المدة: 30 ثانية"
+                )
 
         except Exception as e:
-            send(f"⚠️ خطأ مؤقت: {e}")
-            time.sleep(60)
+            print("Error:", e)
 
-# =========================
-if __name__ == "__main__":
-    run()
+        time.sleep(60)
+
+# =======================
+# Telegram Listener
+# =======================
+def listen_updates():
+    global selected_pair, running
+    offset = 0
+
+    while True:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+        r = requests.get(url, params={"offset": offset}).json()
+
+        for update in r.get("result", []):
+            offset = update["update_id"] + 1
+
+            if "callback_query" in update:
+                selected_pair = update["callback_query"]["data"]
+                running = True
+                send_message(
+                    f"✅ تم اختيار:\n{selected_pair}\n"
+                    f"سيتم إرسال إشارات BUY / SELL تلقائيًا"
+                )
+                threading.Thread(target=signal_loop, daemon=True).start()
+
+        time.sleep(2)
+
+# =======================
+# Start
+# =======================
+send_pairs_buttons()
+listen_updates()
