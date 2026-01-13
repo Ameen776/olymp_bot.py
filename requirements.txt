@@ -1,4 +1,4 @@
 requests
-numpy
-flask
 websocket-client
+numpy
+python-telegram-bot==13.15
