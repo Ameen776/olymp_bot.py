@@ -1,143 +1,187 @@
 import os
-import requests
-import threading
-import numpy as np
-from flask import Flask, request
-from websocket import create_connection
-import json
 import time
+import threading
+import requests
+import json
+from collections import deque
+from websocket import WebSocketApp
 
-# =======================
-# Environment Variables
-# =======================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-PORT = int(os.environ.get("PORT", 10000))
+# ================== ENV ==================
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# =======================
-# Flask Web Server
-# =======================
-app = Flask(__name__)
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is running ✅"
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    """Webhook مباشر لتلقي تحديثات Telegram فورًا"""
-    update = request.get_json()
-    if "callback_query" in update:
-        pair = update["callback_query"]["data"]
-        threading.Thread(target=start_signal_loop, args=(pair,), daemon=True).start()
-        send_message(f"✅ تم اختيار:\n{pair}")
-    return {"ok": True}
-
-def run_web():
-    app.run(host="0.0.0.0", port=PORT)
-
-# =======================
-# الأزواج
-# =======================
-PAIRS = [
-    "Bitcoin OTC", "Ethereum OTC", "Litecoin OTC",
-    "Ripple OTC", "Solana OTC", "NZD/USD OTC", "USD/CHF OTC",
-    "AUD/CAD OTC", "AUD/CHF OTC", "AUD/JPY OTC", "AUD/NZD OTC",
-    "CAD/CHF OTC", "CAD/JPY OTC", "CHF/JPY OTC",
-    "EUR/AUD OTC", "EUR/CAD OTC", "EUR/CHF OTC", "EUR/GBP OTC"
-]
-
-PAIR_MAP = {
-    "Bitcoin OTC": "btcusdt",
-    "Ethereum OTC": "ethusdt",
-    "Litecoin OTC": "ltcusdt",
-    "Ripple OTC": "xrpusdt",
-    "Solana OTC": "solusdt",
-    "NZD/USD OTC": "nzdusdt",
-    "USD/CHF OTC": "usdchf",
-    "AUD/CAD OTC": "audcad",
-    "AUD/CHF OTC": "audchf",
-    "AUD/JPY OTC": "audjpy",
-    "AUD/NZD OTC": "audnzd",
-    "CAD/CHF OTC": "cadchf",
-    "CAD/JPY OTC": "cadjpy",
-    "CHF/JPY OTC": "chfjpy",
-    "EUR/AUD OTC": "euraud",
-    "EUR/CAD OTC": "eurcad",
-    "EUR/CHF OTC": "eurchf",
-    "EUR/GBP OTC": "eurgbp"
+# ================== STATE ==================
+user_state = {
+    "symbol": None,
+    "interval": None,  # seconds
+    "ws": None,
+    "prices": deque(maxlen=50),
+    "last_signal": None,
 }
 
-# =======================
-# Telegram helpers
-# =======================
-def send_message(text, keyboard=None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    if keyboard:
-        payload["reply_markup"] = keyboard
-    try:
-        requests.post(url, json=payload, timeout=5)
-    except:
-        pass
+# ================== UTILS ==================
+def send_message(text, reply_markup=None):
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+    }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    requests.post(f"{TELEGRAM_API}/sendMessage", data=payload, timeout=5)
 
-def send_pairs_buttons():
-    keyboard = []
-    row = []
-    for i, pair in enumerate(PAIRS, 1):
-        row.append({"text": pair, "callback_data": pair})
-        if i % 3 == 0:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    send_message("📊 اختر الزوج (لوحة مفاتيح):", {"inline_keyboard": keyboard})
-
-# =======================
-# RSI calculation
-# =======================
-def rsi(closes, period=14):
-    deltas = np.diff(closes)
-    gain = np.maximum(deltas, 0)
-    loss = np.abs(np.minimum(deltas, 0))
-    avg_gain = np.mean(gain[-period:])
-    avg_loss = np.mean(loss[-period:])
-    if avg_loss == 0:
+def rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return None
+    gains = 0.0
+    losses = 0.0
+    for i in range(-period, 0):
+        diff = prices[i] - prices[i - 1]
+        if diff > 0:
+            gains += diff
+        else:
+            losses -= diff
+    if losses == 0:
         return 100
-    rs = avg_gain / avg_loss
+    rs = gains / losses
     return 100 - (100 / (1 + rs))
 
-# =======================
-# Signal Loop سريع جدًا باستخدام WebSocket
-# =======================
-def start_signal_loop(selected_pair):
-    last_signal = None
-    symbol = PAIR_MAP[selected_pair]
-    ws_url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_1m"
+# ================== BINANCE WS ==================
+def on_message(ws, message):
+    data = json.loads(message)
+    price = float(data["p"])
+    user_state["prices"].append(price)
 
-    try:
-        ws = create_connection(ws_url)
-        while True:
-            result = ws.recv()
-            data = json.loads(result)
-            kline = data['k']
-            close_price = float(kline['c'])
-            # نحتفظ آخر 50 سعر (يمكن تطويره لاحقًا ببيانات حقيقية)
-            closes = [close_price]*50
-            r = rsi(np.array(closes))
+def on_error(ws, error):
+    print("WS ERROR:", error)
 
-            if r < 30 and last_signal != "BUY":
-                send_message(f"📈 BUY\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة شراء الآن")
-                last_signal = "BUY"
-            elif r > 70 and last_signal != "SELL":
-                send_message(f"📉 SELL\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة بيع الآن")
-                last_signal = "SELL"
-    except Exception as e:
-        print("WebSocket error:", e)
+def on_close(ws):
+    print("WS CLOSED")
+
+def start_ws(symbol):
+    if user_state["ws"]:
+        try:
+            user_state["ws"].close()
+        except:
+            pass
+
+    stream = f"{symbol.lower()}@trade"
+    url = f"wss://stream.binance.com:9443/ws/{stream}"
+
+    ws = WebSocketApp(
+        url,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+
+    user_state["ws"] = ws
+    threading.Thread(target=ws.run_forever, daemon=True).start()
+
+# ================== SIGNAL LOOP ==================
+def signal_loop():
+    while True:
         time.sleep(1)
+        if not user_state["symbol"] or not user_state["interval"]:
+            continue
 
-# =======================
-# Start Web
-# =======================
-send_pairs_buttons()
-run_web()
+        if len(user_state["prices"]) < 20:
+            continue
+
+        r = rsi(list(user_state["prices"]))
+        if r is None:
+            continue
+
+        now = time.time()
+        last = user_state.get("last_check", 0)
+        if now - last < user_state["interval"]:
+            continue
+        user_state["last_check"] = now
+
+        if r > 70 and user_state["last_signal"] != "SELL":
+            send_message(
+                f"🔴 SELL\n"
+                f"زوج: {user_state['symbol']}\n"
+                f"RSI: {r:.2f}"
+            )
+            user_state["last_signal"] = "SELL"
+
+        elif r < 30 and user_state["last_signal"] != "BUY":
+            send_message(
+                f"🟢 BUY\n"
+                f"زوج: {user_state['symbol']}\n"
+                f"RSI: {r:.2f}"
+            )
+            user_state["last_signal"] = "BUY"
+
+# ================== TELEGRAM ==================
+def keyboard(rows):
+    return {"keyboard": rows, "resize_keyboard": True}
+
+def handle_update(update):
+    if "message" not in update:
+        return
+
+    text = update["message"].get("text", "")
+
+    if text == "/start":
+        user_state["symbol"] = None
+        user_state["interval"] = None
+        send_message(
+            "اختر الزوج:",
+            keyboard([
+                ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
+                ["SOLUSDT", "XRPUSDT", "ADAUSDT"]
+            ])
+        )
+        return
+
+    if text.endswith("USDT"):
+        user_state["symbol"] = text
+        start_ws(text)
+        send_message(
+            f"✅ تم اختيار الزوج: {text}\nاختر مدة الإشارة:",
+            keyboard([
+                ["15 ثانية", "30 ثانية"],
+                ["45 ثانية", "60 ثانية"]
+            ])
+        )
+        return
+
+    if "ثانية" in text:
+        sec = int(text.split()[0])
+        user_state["interval"] = sec
+        user_state["last_signal"] = None
+        send_message(
+            f"⏱ تم الضبط على {sec} ثانية\n"
+            f"📡 البوت يراقب السوق الآن ويرسل إشارات BUY / SELL تلقائيًا"
+        )
+        return
+
+def telegram_loop():
+    offset = None
+    while True:
+        try:
+            resp = requests.get(
+                f"{TELEGRAM_API}/getUpdates",
+                params={"offset": offset, "timeout": 30},
+                timeout=35,
+            ).json()
+
+            for upd in resp.get("result", []):
+                offset = upd["update_id"] + 1
+                handle_update(upd)
+
+        except Exception as e:
+            print("TG ERROR:", e)
+            time.sleep(1)
+
+# ================== MAIN ==================
+if __name__ == "__main__":
+    send_message("🤖 البوت شغّال\nاكتب /start")
+    threading.Thread(target=signal_loop, daemon=True).start()
+    telegram_loop()
