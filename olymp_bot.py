@@ -1,92 +1,122 @@
 import os
 import requests
-import time
 import numpy as np
 
 # =========================
-# قراءة المفاتيح من Environment Variables
+# Environment Variables
 # =========================
-BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-# =========================
 
-# ربط أسماء Olymp Trade مع Binance
+# تحقق من المتغيرات
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    raise Exception("❌ تأكد من إضافة TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في Render")
+
+# =========================
+# أزواج مدعومة فعليًا من Binance
+# =========================
 PAIRS = {
     "Bitcoin OTC": "BTCUSDT",
     "Ethereum OTC": "ETHUSDT",
     "Litecoin OTC": "LTCUSDT",
     "Ripple OTC": "XRPUSDT",
-    "Solana OTC": "SOLUSDT",
-    "EUR/GBP OTC": "EURGBP",
-    "EUR/CHF OTC": "EURCHF",
-    "AUD/JPY OTC": "AUDJPY",
-    "USD/CHF OTC": "USDCHF",
-    "CAD/JPY OTC": "CADJPY"
+    "Solana OTC": "SOLUSDT"
 }
 
-# أوقات الصفقة الممكنة (يمكن التعديل لاحقًا في المتغير)
-TIMEFRAMES = {
-    "15 ثانية": "1m",
-    "30 ثانية": "1m",
-    "1 دقيقة": "1m"
-}
-
-# دالة جلب الشموع من Binance
+# =========================
+# جلب الشموع من Binance
+# =========================
 def get_klines(symbol, interval="1m", limit=50):
     url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    return requests.get(url, params=params).json()
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    r = requests.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
-# دالة حساب RSI
+# =========================
+# حساب RSI (آمن)
+# =========================
 def rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return None
+
     deltas = np.diff(closes)
     gain = np.maximum(deltas, 0)
     loss = np.abs(np.minimum(deltas, 0))
+
     avg_gain = np.mean(gain[-period:])
     avg_loss = np.mean(loss[-period:])
+
     if avg_loss == 0:
         return 100
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# دالة إرسال الإشارة لتيليجرام
+# =========================
+# إرسال إشارة تيليجرام
+# =========================
 def send_signal(asset, direction, duration, reason):
-    msg = f"""
-🚨 إشارة Olymp Trade (OTC)
+    message = f"""
+🚨 إشارة تداول (OTC)
 
 الأصل: {asset}
 الاتجاه: {direction}
-الوقت: {duration}
+المدة: {duration}
 الدخول: الآن
 
-التحليل:
+📊 التحليل:
 {reason}
 """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-    requests.post(url, data=data)
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    requests.post(url, data=payload, timeout=10)
 
-# دالة تحليل الأسعار لكل زوج
+# =========================
+# التحليل الرئيسي (بدون Loop)
+# =========================
 def analyze():
     for asset, symbol in PAIRS.items():
         try:
             klines = get_klines(symbol)
-            closes = np.array([float(k[4]) for k in klines])
+
+            # تحقق من صحة البيانات
+            if not isinstance(klines, list) or len(klines) < 20:
+                print(f"⚠️ بيانات غير كافية لـ {asset}")
+                continue
+
+            closes = []
+            for k in klines:
+                if isinstance(k, list) and len(k) > 4:
+                    closes.append(float(k[4]))
+
+            if len(closes) < 15:
+                print(f"⚠️ شموع غير كافية لـ {asset}")
+                continue
+
+            closes = np.array(closes)
             r = rsi(closes)
 
-            # إشارات UP/DOWN بناء على RSI
+            if r is None:
+                continue
+
             if r < 30:
-                send_signal(asset, "📈 UP", "30 ثانية", "RSI تشبع بيعي + ارتداد")
+                send_signal(asset, "📈 UP", "30 ثانية", "RSI تشبع بيعي + احتمال ارتداد")
             elif r > 70:
-                send_signal(asset, "📉 DOWN", "30 ثانية", "RSI تشبع شرائي + انعكاس")
+                send_signal(asset, "📉 DOWN", "30 ثانية", "RSI تشبع شرائي + احتمال انعكاس")
 
         except Exception as e:
-            print(f"Error analyzing {asset}: {e}")
-            continue
+            print(f"❌ خطأ في {asset}: {e}")
 
-# الحلقة الرئيسية للبوت
-while True:
+# =========================
+# تشغيل مرة واحدة (متوافق مع Render)
+# =========================
+if __name__ == "__main__":
     analyze()
-    time.sleep(60)
