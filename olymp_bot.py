@@ -2,9 +2,9 @@ import os
 import requests
 import threading
 import numpy as np
-import json
-from flask import Flask
+from flask import Flask, request
 from websocket import create_connection
+import json
 import time
 
 # =======================
@@ -12,17 +12,26 @@ import time
 # =======================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 PORT = int(os.environ.get("PORT", 10000))
 
 # =======================
 # Flask Web Server
 # =======================
 app = Flask(__name__)
-@app.route("/")
+
+@app.route("/", methods=["GET"])
 def home():
     return "Bot is running ✅"
+
+@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    """Webhook مباشر لتلقي تحديثات Telegram فورًا"""
+    update = request.get_json()
+    if "callback_query" in update:
+        pair = update["callback_query"]["data"]
+        threading.Thread(target=start_signal_loop, args=(pair,), daemon=True).start()
+        send_message(f"✅ تم اختيار:\n{pair}")
+    return {"ok": True}
 
 def run_web():
     app.run(host="0.0.0.0", port=PORT)
@@ -39,28 +48,25 @@ PAIRS = [
 ]
 
 PAIR_MAP = {
-    "Bitcoin OTC": "BTCUSDT",
-    "Ethereum OTC": "ETHUSDT",
-    "Litecoin OTC": "LTCUSDT",
-    "Ripple OTC": "XRPUSDT",
-    "Solana OTC": "SOLUSDT",
-    "NZD/USD OTC": "NZDUSDT",
-    "USD/CHF OTC": "USDCHF",
-    "AUD/CAD OTC": "AUDCAD",
-    "AUD/CHF OTC": "AUDCHF",
-    "AUD/JPY OTC": "AUDJPY",
-    "AUD/NZD OTC": "AUDNZD",
-    "CAD/CHF OTC": "CADCHF",
-    "CAD/JPY OTC": "CADJPY",
-    "CHF/JPY OTC": "CHFJPY",
-    "EUR/AUD OTC": "EURAUD",
-    "EUR/CAD OTC": "EURCAD",
-    "EUR/CHF OTC": "EURCHF",
-    "EUR/GBP OTC": "EURGBP"
+    "Bitcoin OTC": "btcusdt",
+    "Ethereum OTC": "ethusdt",
+    "Litecoin OTC": "ltcusdt",
+    "Ripple OTC": "xrpusdt",
+    "Solana OTC": "solusdt",
+    "NZD/USD OTC": "nzdusdt",
+    "USD/CHF OTC": "usdchf",
+    "AUD/CAD OTC": "audcad",
+    "AUD/CHF OTC": "audchf",
+    "AUD/JPY OTC": "audjpy",
+    "AUD/NZD OTC": "audnzd",
+    "CAD/CHF OTC": "cadchf",
+    "CAD/JPY OTC": "cadjpy",
+    "CHF/JPY OTC": "chfjpy",
+    "EUR/AUD OTC": "euraud",
+    "EUR/CAD OTC": "eurcad",
+    "EUR/CHF OTC": "eurchf",
+    "EUR/GBP OTC": "eurgbp"
 }
-
-selected_pair = None
-running = False
 
 # =======================
 # Telegram helpers
@@ -102,63 +108,36 @@ def rsi(closes, period=14):
     return 100 - (100 / (1 + rs))
 
 # =======================
-# Signal Loop using WebSocket
+# Signal Loop سريع جدًا باستخدام WebSocket
 # =======================
-def signal_loop():
-    global running
+def start_signal_loop(selected_pair):
     last_signal = None
-    symbol = PAIR_MAP[selected_pair].lower()
+    symbol = PAIR_MAP[selected_pair]
     ws_url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_1m"
 
-    while running:
-        try:
-            ws = create_connection(ws_url)
-            while running:
-                result = ws.recv()
-                data = json.loads(result)
-                kline = data['k']
-                if kline['x']:  # شمعة مكتملة
-                    close_price = float(kline['c'])
-                    # نحفظ آخر 50 سعر
-                    closes = [close_price]*50
-                    r = rsi(np.array(closes))
-                    if r < 30 and last_signal != "BUY":
-                        send_message(f"📈 BUY\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة شراء الآن")
-                        last_signal = "BUY"
-                    elif r > 70 and last_signal != "SELL":
-                        send_message(f"📉 SELL\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة بيع الآن")
-                        last_signal = "SELL"
-        except Exception as e:
-            print("WS error:", e)
-            time.sleep(1)
+    try:
+        ws = create_connection(ws_url)
+        while True:
+            result = ws.recv()
+            data = json.loads(result)
+            kline = data['k']
+            close_price = float(kline['c'])
+            # نحتفظ آخر 50 سعر (يمكن تطويره لاحقًا ببيانات حقيقية)
+            closes = [close_price]*50
+            r = rsi(np.array(closes))
+
+            if r < 30 and last_signal != "BUY":
+                send_message(f"📈 BUY\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة شراء الآن")
+                last_signal = "BUY"
+            elif r > 70 and last_signal != "SELL":
+                send_message(f"📉 SELL\n{selected_pair}\nRSI: {round(r,2)}\nافتح صفقة بيع الآن")
+                last_signal = "SELL"
+    except Exception as e:
+        print("WebSocket error:", e)
+        time.sleep(1)
 
 # =======================
-# Telegram listener سريع
+# Start Web
 # =======================
-def listen_updates():
-    global selected_pair, running
-    offset = 0
-    send_pairs_buttons()
-    while True:
-        try:
-            r = requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
-                params={"offset": offset, "timeout": 1},
-                timeout=5
-            ).json()
-            for update in r.get("result", []):
-                offset = update["update_id"] + 1
-                if "callback_query" in update:
-                    selected_pair = update["callback_query"]["data"]
-                    running = True
-                    send_message(f"✅ تم اختيار:\n{selected_pair}")
-                    threading.Thread(target=signal_loop, daemon=True).start()
-        except Exception as e:
-            print("Update error:", e)
-        time.sleep(0.3)
-
-# =======================
-# Start everything
-# =======================
-threading.Thread(target=listen_updates, daemon=True).start()
+send_pairs_buttons()
 run_web()
