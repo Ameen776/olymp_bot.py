@@ -1,43 +1,49 @@
 import os
 import time
+import threading
 import requests
 import numpy as np
-from telegram import Bot
-from datetime import datetime
 from flask import Flask
-import threading
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ================= Flask (فتح بورت لـ Render) =================
+# ================== ENV VARIABLES ==================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = int(os.getenv("CHAT_ID"))
+
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+
+SYMBOL = "BTCUSDT"
+INTERVAL = "1m"   # شمعة دقيقة (أسرع استجابة)
+RSI_PERIOD = 14
+
+# ================== FLASK (لـ Render) ==================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "Bot is running"
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# ================= Telegram =================
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-bot = Bot(token=TOKEN)
+# ================== BINANCE DATA ==================
+def get_klines():
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": SYMBOL,
+        "interval": INTERVAL,
+        "limit": 100
+    }
+    r = requests.get(url, timeout=5)
+    data = r.json()
+    closes = [float(c[4]) for c in data]
+    return closes
 
-# ================= Settings =================
-SYMBOL = "BTCUSDT"
-INTERVAL_SECONDS = 30
-RSI_PERIOD = 14
-CHECK_DELAY = 30
-
-prices = []
-last_signal = None
-
-# ================= RSI =================
-def calculate_rsi(data, period=14):
-    if len(data) < period + 1:
-        return None
-
-    deltas = np.diff(data)
+def calculate_rsi(prices, period=14):
+    deltas = np.diff(prices)
     gains = np.where(deltas > 0, deltas, 0)
     losses = np.where(deltas < 0, -deltas, 0)
 
@@ -48,72 +54,65 @@ def calculate_rsi(data, period=14):
         return 100
 
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-# ================= Price =================
-def get_price():
-    r = requests.get(
-        "https://api.binance.com/api/v3/ticker/price",
-        params={"symbol": SYMBOL},
-        timeout=10
-    )
-    return float(r.json()["price"])
-
-# ================= Bot Loop =================
-def run_bot():
-    global last_signal
-
-    bot.send_message(
-        chat_id=CHAT_ID,
-        text="🚀 Bot Started\nBitcoin OTC\nSource: Binance BTCUSDT\nTF: 30s"
-    )
+# ================== SIGNAL LOOP ==================
+async def signal_loop(app_telegram):
+    last_signal = None
 
     while True:
         try:
-            price = get_price()
-            prices.append(price)
-
+            prices = get_klines()
             rsi = calculate_rsi(prices)
-            if rsi is None:
-                time.sleep(CHECK_DELAY)
-                continue
-
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
             if rsi <= 30 and last_signal != "BUY":
-                bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=(
-                        "🟢 BUY SIGNAL\n"
-                        "Bitcoin OTC\n"
-                        f"Price: {price}\n"
-                        f"RSI: {rsi:.2f}\n"
-                        f"Time: {now}\n"
-                        "⏱ 30 Seconds"
-                    )
+                msg = (
+                    "🟢 إشارة شراء (تشبع بيعي)\n"
+                    f"زوج: BTC (Binance)\n"
+                    f"RSI: {rsi:.2f}\n"
+                    "⏱️ الإطار: 1 دقيقة\n"
+                    "⚠️ استخدمها يدويًا على Olymp Trade"
                 )
+                await app_telegram.bot.send_message(chat_id=CHAT_ID, text=msg)
                 last_signal = "BUY"
 
             elif rsi >= 70 and last_signal != "SELL":
-                bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=(
-                        "🔴 SELL SIGNAL\n"
-                        "Bitcoin OTC\n"
-                        f"Price: {price}\n"
-                        f"RSI: {rsi:.2f}\n"
-                        f"Time: {now}\n"
-                        "⏱ 30 Seconds"
-                    )
+                msg = (
+                    "🔴 إشارة بيع (تشبع شرائي)\n"
+                    f"زوج: BTC (Binance)\n"
+                    f"RSI: {rsi:.2f}\n"
+                    "⏱️ الإطار: 1 دقيقة\n"
+                    "⚠️ استخدمها يدويًا على Olymp Trade"
                 )
+                await app_telegram.bot.send_message(chat_id=CHAT_ID, text=msg)
                 last_signal = "SELL"
 
         except Exception as e:
             print("Error:", e)
 
-        time.sleep(CHECK_DELAY)
+        await asyncio.sleep(5)  # فحص كل 5 ثواني (سريع جدًا)
 
-# ================= Start =================
+# ================== TELEGRAM ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "✅ البوت شغال\n"
+        "📡 يراقب BTC من Binance\n"
+        "⏱️ إشارات حقيقية لحظية"
+    )
+
+# ================== MAIN ==================
+import asyncio
+
+def main():
+    app_telegram = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app_telegram.add_handler(CommandHandler("start", start))
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(signal_loop(app_telegram))
+
+    app_telegram.run_polling()
+
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
-    threading.Thread(target=run_bot).start()
+    threading.Thread(target=run_flask).start()
+    main()
