@@ -1,25 +1,26 @@
 import os
-import json
+import time
+import requests
 import numpy as np
-import websocket
-import threading
 from telegram import Bot
+from datetime import datetime
 
-# ================== Telegram ==================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# ================= Telegram =================
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
+bot = Bot(token=TOKEN)
 
-# ================== Settings ==================
-SYMBOL = "btcusdt"        # مصدر السعر من Binance
-INTERVAL = "30s"          # 30 ثانية (ممتاز لـ OTC)
+# ================= Settings =================
+SYMBOL = "BTCUSDT"
+INTERVAL_SECONDS = 30       # وقت الصفقة (30 ثانية)
 RSI_PERIOD = 14
+CHECK_DELAY = 30            # كل 30 ثانية
 
 prices = []
-last_signal = None        # لمنع تكرار نفس الإشارة
+last_signal = None
 
-# ================== RSI ==================
+# ================= RSI =================
 def calculate_rsi(data, period=14):
     if len(data) < period + 1:
         return None
@@ -37,79 +38,73 @@ def calculate_rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ================== WebSocket ==================
-def on_message(ws, message):
+# ================= Get Price =================
+def get_price():
+    url = "https://api.binance.com/api/v3/ticker/price"
+    params = {"symbol": SYMBOL}
+    r = requests.get(url, params=params, timeout=10)
+    return float(r.json()["price"])
+
+# ================= Main Loop =================
+def run_bot():
     global last_signal
 
-    data = json.loads(message)
-
-    if "k" not in data:
-        return
-
-    candle = data["k"]
-
-    # ننتظر إغلاق الشمعة
-    if not candle["x"]:
-        return
-
-    close_price = float(candle["c"])
-    prices.append(close_price)
-
-    rsi = calculate_rsi(prices, RSI_PERIOD)
-    if rsi is None:
-        return
-
-    # BUY
-    if rsi <= 30 and last_signal != "BUY":
-        bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=(
-                "🟢 إشارة شراء (BUY)\n"
-                "الأصل: Bitcoin OTC\n"
-                "المصدر: Binance BTCUSDT\n"
-                f"RSI: {rsi:.2f}\n"
-                "الفريم: 30 ثانية\n"
-                "📌 تنفيذ يدوي على Olymp Trade"
-            )
-        )
-        last_signal = "BUY"
-
-    # SELL
-    elif rsi >= 70 and last_signal != "SELL":
-        bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=(
-                "🔴 إشارة بيع (SELL)\n"
-                "الأصل: Bitcoin OTC\n"
-                "المصدر: Binance BTCUSDT\n"
-                f"RSI: {rsi:.2f}\n"
-                "الفريم: 30 ثانية\n"
-                "📌 تنفيذ يدوي على Olymp Trade"
-            )
-        )
-        last_signal = "SELL"
-
-def on_error(ws, error):
-    print("WebSocket error:", error)
-
-def on_close(ws):
-    print("WebSocket closed")
-
-def on_open(ws):
-    print("WebSocket connected")
-
-def start_socket():
-    url = f"wss://stream.binance.com:9443/ws/{SYMBOL}@kline_{INTERVAL}"
-    ws = websocket.WebSocketApp(
-        url,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
+    bot.send_message(
+        chat_id=CHAT_ID,
+        text="🚀 Bot Started\nالأصل: Bitcoin OTC\nالمصدر: Binance BTCUSDT\nالفريم: 30 ثانية"
     )
-    ws.on_open = on_open
-    ws.run_forever()
 
-# ================== Start ==================
+    while True:
+        try:
+            price = get_price()
+            prices.append(price)
+
+            rsi = calculate_rsi(prices, RSI_PERIOD)
+            if rsi is None:
+                time.sleep(CHECK_DELAY)
+                continue
+
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            # BUY
+            if rsi <= 30 and last_signal != "BUY":
+                bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=(
+                        "🟢 إشارة شراء (BUY)\n"
+                        "الأصل: Bitcoin OTC\n"
+                        "المصدر: Binance BTCUSDT\n"
+                        f"السعر: {price}\n"
+                        f"RSI: {rsi:.2f}\n"
+                        f"الوقت: {now}\n"
+                        "⏱ مدة الصفقة: 30 ثانية\n"
+                        "📌 تنفيذ يدوي على Olymp Trade"
+                    )
+                )
+                last_signal = "BUY"
+
+            # SELL
+            elif rsi >= 70 and last_signal != "SELL":
+                bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=(
+                        "🔴 إشارة بيع (SELL)\n"
+                        "الأصل: Bitcoin OTC\n"
+                        "المصدر: Binance BTCUSDT\n"
+                        f"السعر: {price}\n"
+                        f"RSI: {rsi:.2f}\n"
+                        f"الوقت: {now}\n"
+                        "⏱ مدة الصفقة: 30 ثانية\n"
+                        "📌 تنفيذ يدوي على Olymp Trade"
+                    )
+                )
+                last_signal = "SELL"
+
+        except Exception as e:
+            print("Error:", e)
+
+        time.sleep(CHECK_DELAY)
+
+# ================= Start =================
 if __name__ == "__main__":
-    print("🚀 Bot started – Binance → Telegram → Olymp Trade")
-    threading.Thread(target=start_socket).start()
+    run_bot()
