@@ -1,0 +1,17 @@
+{
+  "name": "olymp-trade-bot",
+  "version": "1.0.0",
+  "description": "Bot for Olymp Trade signals from Binance",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.3.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
