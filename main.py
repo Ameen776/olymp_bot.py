@@ -1,227 +1,247 @@
 import time
 import requests
-import numpy as np
-from datetime import datetime
 import hmac
 import hashlib
 import urllib.parse
+import json
+from datetime import datetime
 from typing import Dict, List
 from config import *
 
-class BinanceSignalBot:
+class SimpleBinanceBot:
     def __init__(self):
         self.base_url = "https://api.binance.com"
         self.session = requests.Session()
         self.session.headers.update({
-            'X-MBX-APIKEY': BINANCE_API_KEY
+            'X-MBX-APIKEY': BINANCE_API_KEY,
+            'Content-Type': 'application/json'
         })
-    
-    def get_klines(self, symbol: str, interval: str = '1m', limit: int = 100):
-        endpoint = "/api/v3/klines"
-        params = {
-            'symbol': symbol,
-            'interval': interval,
-            'limit': limit
-        }
+        print("✅ البوت بدأ التشغيل")
+        print(f"📊 يتابع: {list(TRADING_PAIRS.keys())}")
         
-        response = self.session.get(self.base_url + endpoint, params=params)
-        return response.json()
-    
-    def calculate_rsi(self, prices: List[float], period: int = 14):
-        """حساب RSI بدون pandas"""
-        if len(prices) < period + 1:
-            return 50
-        
-        deltas = np.diff(prices)
-        seed = deltas[:period]
-        
-        up = seed[seed >= 0].sum() / period
-        down = -seed[seed < 0].sum() / period
-        
-        for i in range(period, len(deltas)):
-            delta = deltas[i]
-            if delta > 0:
-                up_val = delta
-                down_val = 0
-            else:
-                up_val = 0
-                down_val = -delta
+    def get_klines_simple(self, symbol: str):
+        """الحصول على بيانات بسيطة من Binance"""
+        try:
+            endpoint = "/api/v3/ticker/24hr"
+            params = {'symbol': symbol}
             
-            up = (up * (period - 1) + up_val) / period
-            down = (down * (period - 1) + down_val) / period
-        
-        if down == 0:
-            return 100
-        
-        rs = up / down
-        return 100 - (100 / (1 + rs))
-    
-    def calculate_sma(self, prices: List[float], period: int):
-        """حساب المتوسط المتحرك البسيط"""
-        if len(prices) < period:
+            response = self.session.get(self.base_url + endpoint, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"❌ خطأ في API: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ خطأ في الاتصال: {e}")
             return None
-        return np.mean(prices[-period:])
     
-    def analyze_signals(self, kline_data):
-        """تحليل الإشارات بدون pandas"""
-        if not kline_data or len(kline_data) < 20:
-            return []
-        
-        # استخراج أسعار الإغلاق
-        closes = [float(k[4]) for k in kline_data]  # الفهرس 4 هو سعر الإغلاق
-        
-        # حساب RSI
-        rsi = self.calculate_rsi(closes)
-        
-        # حساب المتوسطات المتحركة
-        sma_short = self.calculate_sma(closes, 12)
-        sma_long = self.calculate_sma(closes, 26)
-        
+    def get_recent_trades(self, symbol: str):
+        """الحصول على آخر الصفقات"""
+        try:
+            endpoint = "/api/v3/trades"
+            params = {'symbol': symbol, 'limit': 10}
+            
+            response = self.session.get(self.base_url + endpoint, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return None
+                
+        except Exception:
+            return None
+    
+    def analyze_market(self, market_data, trades_data):
+        """تحليل السوق بشكل مبسط"""
         signals = []
         
-        # تحليل RSI
-        if rsi > RSI_OVERBOUGHT:
-            signals.append({
-                'type': 'SELL',
-                'indicator': 'RSI',
-                'value': round(rsi, 2),
-                'strength': 'STRONG' if rsi > 80 else 'MODERATE'
-            })
-        elif rsi < RSI_OVERSOLD:
-            signals.append({
-                'type': 'BUY',
-                'indicator': 'RSI',
-                'value': round(rsi, 2),
-                'strength': 'STRONG' if rsi < 20 else 'MODERATE'
-            })
+        if not market_data:
+            return signals
         
-        # تحليل المتوسطات المتحركة
-        if sma_short and sma_long and len(closes) >= 26:
-            prev_short = np.mean(closes[-13:-1]) if len(closes) > 13 else None
-            prev_long = np.mean(closes[-27:-1]) if len(closes) > 27 else None
+        try:
+            # تحليل التغير في السعر
+            price_change_percent = float(market_data.get('priceChangePercent', 0))
+            current_price = float(market_data.get('lastPrice', 0))
             
-            if prev_short and prev_long:
-                if sma_short > sma_long and prev_short <= prev_long:
+            # إشارات بناء على التغير السعري
+            if price_change_percent > PRICE_CHANGE_THRESHOLD:
+                signals.append({
+                    'type': 'BUY',
+                    'indicator': 'PRICE_CHANGE',
+                    'value': f"+{price_change_percent:.2f}%",
+                    'strength': 'BULLISH_MOMENTUM'
+                })
+            elif price_change_percent < -PRICE_CHANGE_THRESHOLD:
+                signals.append({
+                    'type': 'SELL',
+                    'indicator': 'PRICE_CHANGE',
+                    'value': f"{price_change_percent:.2f}%",
+                    'strength': 'BEARISH_MOMENTUM'
+                })
+            
+            # تحليل حجم التداول
+            volume = float(market_data.get('volume', 0))
+            quote_volume = float(market_data.get('quoteVolume', 0))
+            
+            if volume > 0 and quote_volume > 1000000:  # حجم كبير
+                signals.append({
+                    'type': 'HIGH_VOLUME',
+                    'indicator': 'VOLUME',
+                    'value': f"${quote_volume:,.0f}",
+                    'strength': 'ACTIVE_MARKET'
+                })
+            
+            # تحليل آخر الصفقات
+            if trades_data:
+                buy_count = sum(1 for trade in trades_data if not trade.get('isBuyerMaker', True))
+                sell_count = len(trades_data) - buy_count
+                
+                if buy_count > sell_count * 1.5:
                     signals.append({
                         'type': 'BUY',
-                        'indicator': 'MA CROSS',
-                        'value': f"SMA12: {sma_short:.4f}",
-                        'strength': 'GOLDEN CROSS'
+                        'indicator': 'TRADE_FLOW',
+                        'value': f"{buy_count}/{sell_count}",
+                        'strength': 'BUYING_PRESSURE'
                     })
-                elif sma_short < sma_long and prev_short >= prev_long:
+                elif sell_count > buy_count * 1.5:
                     signals.append({
                         'type': 'SELL',
-                        'indicator': 'MA CROSS',
-                        'value': f"SMA12: {sma_short:.4f}",
-                        'strength': 'DEATH CROSS'
+                        'indicator': 'TRADE_FLOW',
+                        'value': f"{sell_count}/{buy_count}",
+                        'strength': 'SELLING_PRESSURE'
                     })
-        
-        # تحليل الشمعة الأخيرة
-        latest = kline_data[-1]
-        open_price = float(latest[1])
-        close_price = float(latest[4])
-        
-        if close_price > open_price:
+            
+            # السعر الحالي
             signals.append({
-                'type': 'BULLISH',
-                'indicator': 'CANDLE',
-                'value': round(close_price, 4),
-                'strength': 'GREEN_CANDLE'
+                'type': 'PRICE',
+                'indicator': 'CURRENT',
+                'value': f"${current_price:,.2f}",
+                'strength': 'MARKET_PRICE'
             })
-        else:
-            signals.append({
-                'type': 'BEARISH',
-                'indicator': 'CANDLE',
-                'value': round(close_price, 4),
-                'strength': 'RED_CANDLE'
-            })
+            
+        except Exception as e:
+            print(f"❌ خطأ في التحليل: {e}")
         
         return signals
     
-    def send_telegram_alert(self, pair: str, signals: list, interval: int):
-        """إرسال تنبيه عبر Telegram (نفس الكود السابق)"""
+    def send_telegram(self, pair: str, signals: List[Dict], interval: int):
+        """إرسال رسالة عبر Telegram"""
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-            print("❌ Telegram credentials missing")
-            return
-        
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        message = f"🚨 *إشارة تداول* 🚨\n\n"
-        message += f"📈 *الزوج:* {pair}\n"
-        message += f"⏰ *الفترة:* {interval} ثانية\n"
-        message += f"🕐 *الوقت:* {timestamp}\n\n"
-        
-        if signals:
-            message += "*الإشارات المكتشفة:*\n"
-            for signal in signals:
-                emoji = "🟢" if signal['type'] in ['BUY', 'BULLISH'] else "🔴"
-                message += f"{emoji} *{signal['type']}* بواسطة {signal['indicator']}\n"
-                message += f"   القيمة: {signal['value']}\n"
-                message += f"   القوة: {signal['strength']}\n\n"
-        else:
-            message += "📭 *لا توجد إشارات قوية حالياً*\n\n"
-        
-        message += "⚠️ *تحذير:* هذه ليست نصيحة مالية\n"
-        message += "تأكد من إجراء بحثك الخاص"
-        
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        params = {
-            'chat_id': TELEGRAM_CHAT_ID,
-            'text': message,
-            'parse_mode': 'Markdown',
-            'disable_web_page_preview': True
-        }
+            print("⚠️ مفاتيح Telegram غير موجودة")
+            return False
         
         try:
-            response = requests.post(url, params=params, timeout=10)
-            if response.status_code == 200:
-                print(f"✅ تم إرسال التنبيه لـ {pair}")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            message = "📊 *تقرير تداول*\n\n"
+            message += f"*الزوج:* {pair}\n"
+            message += f"*الوقت:* {timestamp}\n"
+            message += f"*الفاصل:* {interval} ثانية\n\n"
+            
+            if signals:
+                message += "*📈 الإشارات:*\n"
+                for signal in signals:
+                    emoji = "🟢" if signal['type'] == 'BUY' else "🔴" if signal['type'] == 'SELL' else "📊"
+                    message += f"{emoji} *{signal['type']}* - {signal['indicator']}\n"
+                    message += f"   القيمة: {signal['value']}\n"
+                    message += f"   القوة: {signal['strength']}\n\n"
             else:
-                print(f"❌ فشل إرسال التنبيه: {response.text}")
+                message += "*📭 لا توجد إشارات قوية حالياً*\n\n"
+            
+            message += "⚡ *البوت يعمل بنجاح*\n"
+            message += "🔔 الإشعارات نشطة كل دقيقة\n\n"
+            message += "⚠️ *تحذير:* للتجربة فقط\n"
+            
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {
+                'chat_id': TELEGRAM_CHAT_ID,
+                'text': message,
+                'parse_mode': 'Markdown',
+                'disable_web_page_preview': True
+            }
+            
+            response = requests.post(url, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                print(f"✅ تم إرسال التقرير لـ {pair}")
+                return True
+            else:
+                print(f"❌ فشل إرسال: {response.text[:100]}")
+                return False
+                
         except Exception as e:
-            print(f"❌ خطأ في إرسال Telegram: {e}")
+            print(f"❌ خطأ في Telegram: {e}")
+            return False
+    
+    def check_api_status(self):
+        """فحص حالة API"""
+        try:
+            response = requests.get(f"{self.base_url}/api/v3/ping", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
     
     def run(self):
-        """تشغيل البوت"""
-        print("🚀 بدأ تشغيل بوت إشارات Binance...")
-        print(f"📊 الأزواج المتابعة: {list(TRADING_PAIRS.keys())}")
-        print(f"⏰ الفترات الزمنية: {TIME_INTERVALS} ثانية")
+        """التشغيل الرئيسي"""
+        print("🔍 فحص اتصال API...")
         
-        last_sent = {pair: {interval: 0 for interval in TIME_INTERVALS} 
-                    for pair in TRADING_PAIRS.keys()}
+        if not self.check_api_status():
+            print("❌ Binance API غير متاح")
+            return
+        
+        print("✅ اتصال API نشط")
+        
+        # إرسال رسالة بدء التشغيل
+        start_signals = [{
+            'type': 'STARTUP',
+            'indicator': 'BOT',
+            'value': 'التشغيل بنجاح',
+            'strength': 'ONLINE'
+        }]
+        self.send_telegram('BOT_STATUS', start_signals, 0)
+        
+        last_sent = {pair: 0 for pair in TRADING_PAIRS.keys()}
+        
+        print("\n🔄 بدأ مراقبة الأسواق...\n")
         
         while True:
-            current_time = time.time()
-            
-            for pair_name, binance_symbol in TRADING_PAIRS.items():
-                try:
-                    # الحصول على البيانات
-                    klines_data = self.get_klines(binance_symbol, '1m', 30)
-                    
-                    if not klines_data:
-                        continue
-                    
-                    # تحليل الإشارات
-                    signals = self.analyze_signals(klines_data)
-                    
-                    # إرسال التنبيهات حسب الوقت
-                    for interval in TIME_INTERVALS:
-                        if current_time - last_sent[pair_name][interval] >= interval:
-                            if signals:  # أرسل فقط إذا كانت هناك إشارات
-                                self.send_telegram_alert(pair_name, signals, interval)
-                                last_sent[pair_name][interval] = current_time
-                                time.sleep(1)  # تأخير بسيط بين الرسائل
+            try:
+                current_time = time.time()
                 
-                except Exception as e:
-                    print(f"❌ خطأ في {pair_name}: {str(e)[:100]}")
-                    time.sleep(5)
-                    continue
-            
-            # انتظار 1 ثانية قبل التكرار التالي
-            time.sleep(1)
+                for pair_name, binance_symbol in TRADING_PAIRS.items():
+                    # التحقق من الوقت المناسب للإرسال
+                    time_since_last = current_time - last_sent.get(pair_name, 0)
+                    
+                    if time_since_last >= min(TIME_INTERVALS):
+                        # جمع البيانات
+                        market_data = self.get_klines_simple(binance_symbol)
+                        trades_data = self.get_recent_trades(binance_symbol)
+                        
+                        # التحليل
+                        signals = self.analyze_market(market_data, trades_data)
+                        
+                        # إرسال التقرير
+                        if signals:
+                            self.send_telegram(pair_name, signals, min(TIME_INTERVALS))
+                        
+                        last_sent[pair_name] = current_time
+                        
+                        print(f"📡 {pair_name}: تم التحليل - {len(signals)} إشارة")
+                
+                # انتظار 10 ثواني قبل التكرار التالي
+                time.sleep(10)
+                
+            except KeyboardInterrupt:
+                print("\n🛑 إيقاف البوت...")
+                break
+            except Exception as e:
+                print(f"❌ خطأ غير متوقع: {e}")
+                time.sleep(30)
 
 def main():
-    bot = BinanceSignalBot()
+    bot = SimpleBinanceBot()
     bot.run()
 
 if __name__ == "__main__":
