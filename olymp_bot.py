@@ -4,18 +4,30 @@ import requests
 import numpy as np
 from telegram import Bot
 from datetime import datetime
+from flask import Flask
+import threading
+
+# ================= Flask (فتح بورت لـ Render) =================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
 # ================= Telegram =================
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 bot = Bot(token=TOKEN)
 
 # ================= Settings =================
 SYMBOL = "BTCUSDT"
-INTERVAL_SECONDS = 30       # وقت الصفقة (30 ثانية)
+INTERVAL_SECONDS = 30
 RSI_PERIOD = 14
-CHECK_DELAY = 30            # كل 30 ثانية
+CHECK_DELAY = 30
 
 prices = []
 last_signal = None
@@ -38,20 +50,22 @@ def calculate_rsi(data, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# ================= Get Price =================
+# ================= Price =================
 def get_price():
-    url = "https://api.binance.com/api/v3/ticker/price"
-    params = {"symbol": SYMBOL}
-    r = requests.get(url, params=params, timeout=10)
+    r = requests.get(
+        "https://api.binance.com/api/v3/ticker/price",
+        params={"symbol": SYMBOL},
+        timeout=10
+    )
     return float(r.json()["price"])
 
-# ================= Main Loop =================
+# ================= Bot Loop =================
 def run_bot():
     global last_signal
 
     bot.send_message(
         chat_id=CHAT_ID,
-        text="🚀 Bot Started\nالأصل: Bitcoin OTC\nالمصدر: Binance BTCUSDT\nالفريم: 30 ثانية"
+        text="🚀 Bot Started\nBitcoin OTC\nSource: Binance BTCUSDT\nTF: 30s"
     )
 
     while True:
@@ -59,43 +73,37 @@ def run_bot():
             price = get_price()
             prices.append(price)
 
-            rsi = calculate_rsi(prices, RSI_PERIOD)
+            rsi = calculate_rsi(prices)
             if rsi is None:
                 time.sleep(CHECK_DELAY)
                 continue
 
             now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-            # BUY
             if rsi <= 30 and last_signal != "BUY":
                 bot.send_message(
                     chat_id=CHAT_ID,
                     text=(
-                        "🟢 إشارة شراء (BUY)\n"
-                        "الأصل: Bitcoin OTC\n"
-                        "المصدر: Binance BTCUSDT\n"
-                        f"السعر: {price}\n"
+                        "🟢 BUY SIGNAL\n"
+                        "Bitcoin OTC\n"
+                        f"Price: {price}\n"
                         f"RSI: {rsi:.2f}\n"
-                        f"الوقت: {now}\n"
-                        "⏱ مدة الصفقة: 30 ثانية\n"
-                        "📌 تنفيذ يدوي على Olymp Trade"
+                        f"Time: {now}\n"
+                        "⏱ 30 Seconds"
                     )
                 )
                 last_signal = "BUY"
 
-            # SELL
             elif rsi >= 70 and last_signal != "SELL":
                 bot.send_message(
                     chat_id=CHAT_ID,
                     text=(
-                        "🔴 إشارة بيع (SELL)\n"
-                        "الأصل: Bitcoin OTC\n"
-                        "المصدر: Binance BTCUSDT\n"
-                        f"السعر: {price}\n"
+                        "🔴 SELL SIGNAL\n"
+                        "Bitcoin OTC\n"
+                        f"Price: {price}\n"
                         f"RSI: {rsi:.2f}\n"
-                        f"الوقت: {now}\n"
-                        "⏱ مدة الصفقة: 30 ثانية\n"
-                        "📌 تنفيذ يدوي على Olymp Trade"
+                        f"Time: {now}\n"
+                        "⏱ 30 Seconds"
                     )
                 )
                 last_signal = "SELL"
@@ -107,4 +115,5 @@ def run_bot():
 
 # ================= Start =================
 if __name__ == "__main__":
-    run_bot()
+    threading.Thread(target=run_web).start()
+    threading.Thread(target=run_bot).start()
