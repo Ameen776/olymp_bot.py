@@ -1,483 +1,382 @@
+// ========== البوت المعدل - بدون Binance API مباشر ==========
 const axios = require('axios');
-const CryptoJS = require('crypto-js');
 
-// ========== قراءة المفاتيح من Render ==========
-const BINANCE_API_KEY = process.env.BINANCE_API_KEY || '';
-const BINANCE_SECRET_KEY = process.env.BINANCE_SECRET_KEY || '';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+// ========== المفاتيح من Render ==========
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '';
+const CHAT_ID = process.env.CHAT_ID || '';
 
-// ========== المتغيرات العامة ==========
-let SELECTED_PAIR = 'BTCUSDT';
-let SELECTED_PAIR_NAME = 'BTCOTC';
-let BOT_ACTIVE = true;
-let LAST_PRICE = 0;
-let LAST_SIGNAL_TIME = {};
-let SIGNAL_COOLDOWN = 2000; // تبريد 2 ثانية بين الإشارات
-let MONITORING_INTERVAL = 100; // 100ms مراقبة سريعة جداً
-
-// ========== قائمة الأزواج المتاحة ==========
-const AVAILABLE_PAIRS = {
-    'BTCOTC': {
-        name: 'Bitcoin OTC',
-        symbol: 'BTCUSDT',
-        volatility: 'HIGH'
-    },
-    'XRPOTC': {
-        name: 'Ripple OTC', 
-        symbol: 'XRPUSDT',
-        volatility: 'MEDIUM'
-    },
-    'SOLOTC': {
-        name: 'Solana OTC',
-        symbol: 'SOLUSDT',
-        volatility: 'HIGH'
-    },
-    'AUDCADOTC': {
-        name: 'AUD/CAD OTC',
-        symbol: 'AUDCAD',
-        volatility: 'LOW'
-    }
-};
-
-// ========== إعدادات المراقبة الحية ==========
-const REAL_TIME_SETTINGS = {
-    PRICE_CHANGE_THRESHOLD: 0.05, // 0.05% تغير فوري
-    MIN_VOLUME: 10000,
-    CHECK_INTERVAL: 100, // كل 100ms
-    MAX_SIGNALS_PER_MINUTE: 30 // حد الإشارات في الدقيقة
-};
+// إعدادات البوت
+let selectedPair = 'BTCUSDT';
+let pairName = 'BTCOTC';
+let botActive = true;
+let lastPrice = 0;
 
 // ========== دوال Telegram ==========
-async function sendTelegramMessage(text, reply_markup = null) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log('❌ مفاتيح Telegram مفقودة');
+async function sendTelegram(msg) {
+    if (!TELEGRAM_TOKEN || !CHAT_ID) {
+        console.log('⚠️ مفاتيح Telegram مفقودة');
         return false;
     }
 
     try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
         const data = {
-            chat_id: TELEGRAM_CHAT_ID,
-            text: text,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true
+            chat_id: CHAT_ID,
+            text: msg,
+            parse_mode: 'HTML'
         };
-
-        if (reply_markup) {
-            data.reply_markup = reply_markup;
-        }
 
         const response = await axios.post(url, data, { timeout: 5000 });
         return response.status === 200;
     } catch (error) {
-        console.log('❌ خطأ في إرسال Telegram:', error.message);
+        console.log('❌ خطأ في Telegram:', error.message);
         return false;
     }
 }
 
-// ========== لوحة الأوامر ==========
-function createCommandKeyboard() {
-    return {
-        keyboard: [
-            [
-                { text: '🚀 BTCOTC' },
-                { text: '🌀 XRPOTC' }
-            ],
-            [
-                { text: '⚡ SOLOTC' },
-                { text: '💵 AUD/CAD' }
-            ],
-            [
-                { text: '▶️ تشغيل فوري' },
-                { text: '⏸️ إيقاف فوري' }
-            ],
-            [
-                { text: '📊 حالة البوت' },
-                { text: '⚙️ الإعدادات' }
-            ]
-        ],
-        resize_keyboard: true,
-        one_time_keyboard: false
-    };
-}
-
-// ========== معالجة الأوامر ==========
-async function handleCommand(command) {
-    console.log(`📝 أمر: ${command}`);
-
-    switch (command) {
-        case '🚀 BTCOTC':
-            await selectPair('BTCOTC', 'BTCUSDT', 'Bitcoin OTC');
-            break;
-            
-        case '🌀 XRPOTC':
-            await selectPair('XRPOTC', 'XRPUSDT', 'Ripple OTC');
-            break;
-            
-        case '⚡ SOLOTC':
-            await selectPair('SOLOTC', 'SOLUSDT', 'Solana OTC');
-            break;
-            
-        case '💵 AUD/CAD':
-            await selectPair('AUDCADOTC', 'AUDCAD', 'AUD/CAD OTC');
-            break;
-            
-        case '▶️ تشغيل فوري':
-            BOT_ACTIVE = true;
-            await sendTelegramMessage('✅ <b>تم تشغيل المراقبة الفورية!</b>\nالبوت يراقب السوق في الوقت الحقيقي ⚡', createCommandKeyboard());
-            break;
-            
-        case '⏸️ إيقاف فوري':
-            BOT_ACTIVE = false;
-            await sendTelegramMessage('⏸️ <b>تم إيقاف المراقبة الفورية</b>', createCommandKeyboard());
-            break;
-            
-        case '📊 حالة البوت':
-            await botStatus();
-            break;
-            
-        case '⚙️ الإعدادات':
-            await showSettings();
-            break;
-            
-        default:
-            await sendTelegramMessage(`❌ أمر غير معروف: ${command}`);
-    }
-}
-
-// ========== اختيار الزوج ==========
-async function selectPair(pairName, symbol, displayName) {
-    SELECTED_PAIR = symbol;
-    SELECTED_PAIR_NAME = pairName;
-    LAST_PRICE = 0;
-    LAST_SIGNAL_TIME = {};
-    
-    const message = `
-✅ <b>تم اختيار الزوج بنجاح!</b>
-
-⚡ <b>المراقبة الفورية:</b> 🔥 تشغيل
-⏱️ <b>سرعة المراقبة:</b> 100ms
-📊 <b>الزوج الجديد:</b> ${displayName}
-💰 <b>الرمز:</b> ${symbol}
-
-🚨 <b>نظام الإشارات:</b>
-• مراقبة مستمرة 24/7
-• إشارات فورية عند التغير
-• بدون فواصل زمنية
-• وقت حقيقي مباشر
-
-🔔 <b>يبدأ المراقبة الآن...</b>
-    `;
-    
-    await sendTelegramMessage(message, createCommandKeyboard());
-    console.log(`✅ تم اختيار الزوج: ${pairName}`);
-}
-
-// ========== حالة البوت ==========
-async function botStatus() {
-    const status = BOT_ACTIVE ? '🟢 مراقبة فورية' : '🔴 متوقف';
-    
-    const message = `
-📊 <b>حالة البوت الحية</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>⚡ النظام:</b> مراقبة وقت حقيقي
-<b>⏱️ السرعة:</b> كل 100ms
-<b>📊 الزوج النشط:</b> ${SELECTED_PAIR_NAME}
-<b>💰 الرمز:</b> ${SELECTED_PAIR}
-<b>🔄 الحالة:</b> ${status}
-<b>📈 آخر سعر:</b> ${LAST_PRICE || 'غير معروف'}
-━━━━━━━━━━━━━━━━━━━━
-<b>⚙️ إعدادات المراقبة:</b>
-• عتبة التغير: ${REAL_TIME_SETTINGS.PRICE_CHANGE_THRESHOLD}%
-• سرعة الفحص: ${REAL_TIME_SETTINGS.CHECK_INTERVAL}ms
-• الحد الأقصى: ${REAL_TIME_SETTINGS.MAX_SIGNALS_PER_MINUTE} إشارة/دقيقة
-━━━━━━━━━━━━━━━━━━━━
-<i>استخدم الأزرار للتحكم الفوري</i>
-    `;
-    
-    await sendTelegramMessage(message, createCommandKeyboard());
-}
-
-// ========== إعدادات البوت ==========
-async function showSettings() {
-    const message = `
-⚙️ <b>إعدادات المراقبة الفورية</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>⏱️ سرعة المراقبة:</b> ${MONITORING_INTERVAL}ms
-<b>📈 عتبة التغير:</b> ${REAL_TIME_SETTINGS.PRICE_CHANGE_THRESHOLD}%
-<b>🔄 تبريد الإشارات:</b> ${SIGNAL_COOLDOWN}ms
-<b>🚨 الحد الأقصى:</b> ${REAL_TIME_SETTINGS.MAX_SIGNALS_PER_MINUTE} إشارة/دقيقة
-━━━━━━━━━━━━━━━━━━━━
-<b>📊 الزوج الحالي:</b> ${SELECTED_PAIR_NAME}
-<b>💰 التقلبية:</b> ${AVAILABLE_PAIRS[SELECTED_PAIR_NAME].volatility}
-━━━━━━━━━━━━━━━━━━━━
-<i>⚡ البوت يراقب في الوقت الحقيقي بدون توقف</i>
-    `;
-    
-    await sendTelegramMessage(message, createCommandKeyboard());
-}
-
-// ========== مراقبة Binance فورية ==========
-async function monitorBinanceRealtime() {
-    if (!BOT_ACTIVE) return null;
-    
+// ========== مصادر بديلة للبيانات (بدون Binance API مباشر) ==========
+async function getCryptoData(symbol) {
     try {
-        // استخدام WebSocket Simulation (طلب سريع جداً)
-        const priceUrl = `https://api.binance.com/api/v3/ticker/price?symbol=${SELECTED_PAIR}`;
-        const tradesUrl = `https://api.binance.com/api/v3/trades?symbol=${SELECTED_PAIR}&limit=5`;
-        
-        const [priceResponse, tradesResponse] = await Promise.all([
-            axios.get(priceUrl, { timeout: 3000 }),
-            axios.get(tradesUrl, { timeout: 3000 })
-        ]);
-        
-        if (priceResponse.data && tradesResponse.data) {
-            const currentPrice = parseFloat(priceResponse.data.price);
-            const recentTrades = tradesResponse.data;
-            
-            // تحليل الصفقات الحديثة
-            let buyVolume = 0;
-            let sellVolume = 0;
-            let totalVolume = 0;
-            
-            recentTrades.forEach(trade => {
-                const volume = parseFloat(trade.qty) * parseFloat(trade.price);
-                totalVolume += volume;
+        // المحاولة 1: CoinGecko API (مجاني ولا يحتاج API Key)
+        try {
+            const coinId = getCoinGeckoId(symbol);
+            if (coinId) {
+                const url = `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_change=true`;
+                const response = await axios.get(url, { timeout: 5000 });
                 
-                if (trade.isBuyerMaker) {
-                    sellVolume += volume;
-                } else {
-                    buyVolume += volume;
+                if (response.data && response.data[coinId]) {
+                    return {
+                        price: response.data[coinId].usd,
+                        change24h: response.data[coinId].usd_24h_change,
+                        source: 'CoinGecko'
+                    };
+                }
+            }
+        } catch (e) {
+            console.log('CoinGecko فشل، جرب مصدر آخر...');
+        }
+
+        // المحاولة 2: CoinMarketCap API (عام)
+        try {
+            const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail?slug=${getCMCSlug(symbol)}`;
+            const response = await axios.get(url, { timeout: 5000 });
+            
+            if (response.data && response.data.data) {
+                const data = response.data.data;
+                return {
+                    price: data.quote.USD.price,
+                    change24h: data.quote.USD.percentChange24h,
+                    source: 'CoinMarketCap'
+                };
+            }
+        } catch (e) {
+            console.log('CoinMarketCap فشل، جرب مصدر آخر...');
+        }
+
+        // المحاولة 3: Binance Public API (بدون مفتاح)
+        try {
+            const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`;
+            const response = await axios.get(url, { 
+                timeout: 5000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 }
             });
             
-            return {
-                symbol: SELECTED_PAIR,
-                price: currentPrice,
-                timestamp: Date.now(),
-                volume: totalVolume,
-                buyVolume: buyVolume,
-                sellVolume: sellVolume,
-                tradeCount: recentTrades.length,
-                isBullish: buyVolume > sellVolume * 1.2,
-                isBearish: sellVolume > buyVolume * 1.2
-            };
+            if (response.data) {
+                return {
+                    price: parseFloat(response.data.lastPrice),
+                    change24h: parseFloat(response.data.priceChangePercent),
+                    high24h: parseFloat(response.data.highPrice),
+                    low24h: parseFloat(response.data.lowPrice),
+                    volume: parseFloat(response.data.volume),
+                    source: 'Binance'
+                };
+            }
+        } catch (e) {
+            console.log('Binance فشل، جرب مصدر آخر...');
         }
+
+        // المحاولة 4: Bybit Public API
+        try {
+            const bybitSymbol = symbol.replace('USDT', 'USDT');
+            const url = `https://api.bybit.com/v5/market/tickers?category=spot&symbol=${bybitSymbol}`;
+            const response = await axios.get(url, { timeout: 5000 });
+            
+            if (response.data && response.data.result && response.data.result.list[0]) {
+                const data = response.data.result.list[0];
+                return {
+                    price: parseFloat(data.lastPrice),
+                    change24h: parseFloat((data.price24hPcnt * 100).toFixed(2)),
+                    source: 'Bybit'
+                };
+            }
+        } catch (e) {
+            console.log('Bybit فشل...');
+        }
+
         return null;
     } catch (error) {
-        console.log(`❌ خطأ في المراقبة: ${error.message}`);
+        console.log('❌ خطأ في جلب البيانات:', error.message);
         return null;
     }
 }
 
-// ========== تحليل فوري للإشارات ==========
-function analyzeRealtimeSignal(marketData) {
-    if (!marketData || LAST_PRICE === 0) {
-        if (marketData) LAST_PRICE = marketData.price;
-        return null;
-    }
-    
-    const currentPrice = marketData.price;
-    const priceChange = ((currentPrice - LAST_PRICE) / LAST_PRICE) * 100;
-    const absChange = Math.abs(priceChange);
-    
-    // تحقق من وقت التبريد
-    const now = Date.now();
-    const lastSignalTime = LAST_SIGNAL_TIME[SELECTED_PAIR_NAME] || 0;
-    if (now - lastSignalTime < SIGNAL_COOLDOWN) {
-        return null;
-    }
-    
-    // فقط إذا كان التغير كبيراً بما يكفي
-    if (absChange >= REAL_TIME_SETTINGS.PRICE_CHANGE_THRESHOLD) {
-        const signal = {
-            type: priceChange > 0 ? 'BUY' : 'SELL',
-            strength: absChange > 0.1 ? 'STRONG' : 'MODERATE',
-            priceChange: priceChange,
-            currentPrice: currentPrice,
-            previousPrice: LAST_PRICE,
-            volume: marketData.volume,
-            timestamp: marketData.timestamp,
-            isBullish: marketData.isBullish,
-            isBearish: marketData.isBearish,
-            tradeCount: marketData.tradeCount
-        };
-        
-        LAST_PRICE = currentPrice;
-        LAST_SIGNAL_TIME[SELECTED_PAIR_NAME] = now;
-        
-        return signal;
-    }
-    
-    LAST_PRICE = currentPrice;
-    return null;
+// ========== دوال مساعدة للتحويل ==========
+function getCoinGeckoId(symbol) {
+    const mapping = {
+        'BTCUSDT': 'bitcoin',
+        'ETHUSDT': 'ethereum',
+        'XRPUSDT': 'ripple',
+        'SOLUSDT': 'solana',
+        'BNBUSDT': 'binancecoin',
+        'ADAUSDT': 'cardano',
+        'DOGEUSDT': 'dogecoin'
+    };
+    return mapping[symbol] || null;
 }
 
-// ========== إنشاء إشارة فورية ==========
-function createRealtimeSignalReport(signal) {
+function getCMCSlug(symbol) {
+    const mapping = {
+        'BTCUSDT': 'bitcoin',
+        'ETHUSDT': 'ethereum',
+        'XRPUSDT': 'xrp',
+        'SOLUSDT': 'solana',
+        'BNBUSDT': 'bnb',
+        'ADAUSDT': 'cardano',
+        'DOGEUSDT': 'dogecoin'
+    };
+    return mapping[symbol] || null;
+}
+
+// ========== تحليل الإشارات ==========
+function analyzeSignal(currentPrice, marketData) {
+    if (!currentPrice || !marketData) return null;
+    
+    const signals = [];
+    
+    // 1. تغير يومي قوي
+    if (marketData.change24h > 2.0) {
+        signals.push({
+            type: 'BUY',
+            reason: `📈 صعود قوي: +${marketData.change24h.toFixed(2)}%`,
+            strength: 'STRONG'
+        });
+    } else if (marketData.change24h > 0.5) {
+        signals.push({
+            type: 'BUY',
+            reason: `🟢 صعود معتدل: +${marketData.change24h.toFixed(2)}%`,
+            strength: 'MODERATE'
+        });
+    } else if (marketData.change24h < -2.0) {
+        signals.push({
+            type: 'SELL',
+            reason: `📉 هبوط قوي: ${marketData.change24h.toFixed(2)}%`,
+            strength: 'STRONG'
+        });
+    } else if (marketData.change24h < -0.5) {
+        signals.push({
+            type: 'SELL',
+            reason: `🔴 هبوط معتدل: ${marketData.change24h.toFixed(2)}%`,
+            strength: 'MODERATE'
+        });
+    }
+    
+    // 2. تغير فوري (إذا كان هناك سعر سابق)
+    if (lastPrice > 0) {
+        const instantChange = ((currentPrice - lastPrice) / lastPrice) * 100;
+        
+        if (Math.abs(instantChange) > 0.1) {
+            signals.push({
+                type: instantChange > 0 ? 'BUY' : 'SELL',
+                reason: `⚡ تغير فوري: ${instantChange > 0 ? '+' : ''}${instantChange.toFixed(3)}%`,
+                strength: 'INSTANT'
+            });
+        }
+    }
+    
+    return signals.length > 0 ? signals : null;
+}
+
+// ========== إنشاء الإشارة ==========
+function createSignalMessage(pairName, symbol, price, marketData, signals) {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('ar-SA');
-    const milliseconds = now.getMilliseconds().toString().padStart(3, '0');
     
-    const emoji = signal.type === 'BUY' ? '🟢' : '🔴';
-    const action = signal.type === 'BUY' ? 'شراء' : 'بيع';
-    const direction = signal.type === 'BUY' ? 'صعود' : 'هبوط';
+    // تحديد نوع الإشارة الرئيسية
+    let mainType = 'NEUTRAL';
+    if (signals.some(s => s.type === 'BUY')) mainType = 'BUY';
+    if (signals.some(s => s.type === 'SELL')) mainType = 'SELL';
     
-    let report = `
-${emoji} <b>إشارة ${action} فورية!</b>
+    const emoji = mainType === 'BUY' ? '🟢' : mainType === 'SELL' ? '🔴' : '⚪';
+    
+    let msg = `
+${emoji} <b>${mainType === 'BUY' ? 'إشارة شراء' : mainType === 'SELL' ? 'إشارة بيع' : 'تقرير سوق'}</b>
 ━━━━━━━━━━━━━━━━━━━━
-<b>⏱️ الوقت الدقيق:</b> ${timeStr}.${milliseconds}
-<b>⚡ السرعة:</b> وقت حقيقي مباشر
-<b>📊 الزوج:</b> ${SELECTED_PAIR_NAME}
-<b>💰 الرمز:</b> ${SELECTED_PAIR}
+<b>⏰ الوقت:</b> ${timeStr}
+<b>📊 الزوج:</b> ${pairName}
+<b>💰 الرمز:</b> ${symbol}
+<b>📡 المصدر:</b> ${marketData.source}
 ━━━━━━━━━━━━━━━━━━━━
-<b>💵 السعر الحالي:</b> $${signal.currentPrice.toFixed(4)}
-<b>📈 السعر السابق:</b> $${signal.previousPrice.toFixed(4)}
-<b>🔄 التغير الفوري:</b> <code>${signal.priceChange >= 0 ? '+' : ''}${signal.priceChange.toFixed(4)}%</code>
-<b>📊 الحجم:</b> $${signal.volume.toFixed(2)}
-<b>🔢 عدد الصفقات:</b> ${signal.tradeCount}
-<b>📈 اتجاه السوق:</b> ${signal.isBullish ? 'صعودي قوي' : signal.isBearish ? 'هبوطي قوي' : 'متوازن'}
-━━━━━━━━━━━━━━━━━━━━
-<b>🎯 التوصية الفورية:</b>
-• <b>فتح صفقة ${action}</b> فوراً
-• ${direction} سريع في السوق
-• حركة قوية خلال أجزاء الثانية
-
-<b>💰 مستويات السعر:</b>
-${signal.type === 'BUY' ? 
-`• السعر المستهدف: $${(signal.currentPrice * 1.005).toFixed(4)}
-• وقف الخسارة: $${(signal.currentPrice * 0.998).toFixed(4)}` : 
-`• السعر المستهدف: $${(signal.currentPrice * 0.995).toFixed(4)}
-• وقف الخسارة: $${(signal.currentPrice * 1.002).toFixed(4)}`}
-━━━━━━━━━━━━━━━━━━━━
-<b>⚡ نظام المراقبة:</b>
-• سرعة: 100ms
-• دقة: 0.01%
-• وقت: حقيقي مباشر
-━━━━━━━━━━━━━━━━━━━━
-<i>🚨 إشارة فورية - التحرك السريع</i>
+<b>💵 السعر الحالي:</b> $${price.toFixed(4)}
 `;
     
-    return report;
+    if (marketData.high24h && marketData.low24h) {
+        msg += `<b>📈 الأعلى 24h:</b> $${marketData.high24h.toFixed(4)}\n`;
+        msg += `<b>📉 الأدنى 24h:</b> $${marketData.low24h.toFixed(4)}\n`;
+    }
+    
+    msg += `<b>🔄 التغير 24h:</b> ${marketData.change24h >= 0 ? '+' : ''}${marketData.change24h.toFixed(2)}%\n`;
+    
+    if (marketData.volume) {
+        msg += `<b>📊 الحجم 24h:</b> $${marketData.volume.toLocaleString()}\n`;
+    }
+    
+    msg += `━━━━━━━━━━━━━━━━━━━━\n`;
+    
+    if (signals && signals.length > 0) {
+        msg += `<b>🎯 الإشارات:</b>\n`;
+        signals.forEach(signal => {
+            const signalEmoji = signal.type === 'BUY' ? '🟢' : '🔴';
+            msg += `${signalEmoji} ${signal.reason}\n`;
+        });
+        
+        msg += `\n<b>💡 التوصية:</b>\n`;
+        
+        if (mainType === 'BUY') {
+            msg += `• فتح صفقة <b>شراء</b>\n`;
+            msg += `• الهدف: $${(price * 1.01).toFixed(4)}\n`;
+            msg += `• وقف الخسارة: $${(price * 0.99).toFixed(4)}\n`;
+        } else if (mainType === 'SELL') {
+            msg += `• فتح صفقة <b>بيع</b>\n`;
+            msg += `• الهدف: $${(price * 0.99).toFixed(4)}\n`;
+            msg += `• وقف الخسارة: $${(price * 1.01).toFixed(4)}\n`;
+        } else {
+            msg += `• <b>الانتظار</b> ومراقبة السوق\n`;
+        }
+    } else {
+        msg += `<b>📭 لا توجد إشارات قوية حالياً</b>\n`;
+    }
+    
+    msg += `
+━━━━━━━━━━━━━━━━━━━━
+<b>⚡ البوت:</b> ${botActive ? '🟢 نشط' : '🔴 متوقف'}
+<b>📊 الزوج:</b> ${pairName}
+━━━━━━━━━━━━━━━━━━━━
+<i>⚠️ للإطلاع والتعلم فقط</i>
+`;
+    
+    return msg;
 }
 
-// ========== المراقبة الفورية المستمرة ==========
-async function startRealtimeMonitoring() {
-    console.log('⚡ بدأ المراقبة الفورية...');
+// ========== المراقبة الرئيسية ==========
+async function monitorMarket() {
+    console.log('🚀 بدأ البوت - يستخدم مصادر عامة');
     
-    let signalCount = 0;
-    let lastMinuteReset = Date.now();
+    let errorCount = 0;
     
     while (true) {
         try {
-            if (!BOT_ACTIVE) {
-                await sleep(1000);
+            if (!botActive) {
+                await sleep(5000);
                 continue;
             }
             
-            // إعادة تعيين العداد كل دقيقة
-            if (Date.now() - lastMinuteReset > 60000) {
-                signalCount = 0;
-                lastMinuteReset = Date.now();
-            }
+            // جلب البيانات
+            const marketData = await getCryptoData(selectedPair);
             
-            // التحقق من الحد الأقصى للإشارات
-            if (signalCount >= REAL_TIME_SETTINGS.MAX_SIGNALS_PER_MINUTE) {
-                await sleep(100);
-                continue;
-            }
-            
-            // مراقبة السوق
-            const marketData = await monitorBinanceRealtime();
-            
-            if (marketData) {
-                const signal = analyzeRealtimeSignal(marketData);
+            if (marketData && marketData.price) {
+                const currentPrice = marketData.price;
                 
-                if (signal) {
-                    const report = createRealtimeSignalReport(signal);
+                // تحليل الإشارات
+                const signals = analyzeSignal(currentPrice, marketData);
+                
+                // إرسال الإشارة إذا كانت هناك إشارات
+                if (signals) {
+                    const message = createSignalMessage(pairName, selectedPair, currentPrice, marketData, signals);
+                    await sendTelegram(message);
                     
-                    if (report) {
-                        await sendTelegramMessage(report, createCommandKeyboard());
-                        signalCount++;
-                        
-                        console.log(`⚡ إشارة ${signal.type} فورية! التغير: ${signal.priceChange.toFixed(4)}%`);
-                        
-                        // تبريد قصير بعد الإشارة
-                        await sleep(500);
-                    }
+                    console.log(`✅ أرسلت إشارة ${signals[0].type} - السعر: $${currentPrice}`);
+                    
+                    // تبريد 3 ثواني بعد الإشارة
+                    await sleep(3000);
                 }
                 
-                // عرض سعر في الكونسول (اختياري)
-                if (Date.now() % 5000 < 100) { // كل 5 ثواني
-                    console.log(`📊 ${SELECTED_PAIR}: $${marketData.price} | B:$${marketData.buyVolume.toFixed(0)} | S:$${marketData.sellVolume.toFixed(0)}`);
+                // تحديث السعر الأخير
+                lastPrice = currentPrice;
+                errorCount = 0; // إعادة تعيين عداد الأخطاء
+                
+                // عرض في الكونسول (كل 30 ثانية)
+                if (Date.now() % 30000 < 100) {
+                    console.log(`📊 ${pairName}: $${currentPrice} | التغير: ${marketData.change24h.toFixed(2)}% | المصدر: ${marketData.source}`);
+                }
+                
+            } else {
+                errorCount++;
+                console.log(`❌ فشل في جلب البيانات (المحاولة ${errorCount})`);
+                
+                if (errorCount >= 3) {
+                    console.log('🔄 جرب مصدر بيانات مختلف...');
+                    // يمكن تغيير الزوج أو المصدر هنا
                 }
             }
             
-            // انتظار قصير جداً للمراقبة التالية
-            await sleep(MONITORING_INTERVAL);
+            // انتظار 2 ثانية بين الفحوصات
+            await sleep(2000);
             
         } catch (error) {
             console.log('❌ خطأ في المراقبة:', error.message);
-            await sleep(1000);
+            errorCount++;
+            await sleep(5000);
         }
     }
 }
 
-// ========== دالة المساعدة للنوم ==========
+// ========== دالة المساعدة ==========
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ========== بدء البوت الرئيسي ==========
+// ========== بدء البوت ==========
 async function startBot() {
-    console.log('='.repeat(60));
-    console.log('⚡ BINANCE REAL-TIME SIGNAL BOT');
-    console.log('='.repeat(60));
+    console.log('='.repeat(50));
+    console.log('🤖 بوت إشارات التداول - مصادر عامة');
+    console.log('='.repeat(50));
     
-    console.log('\n🔍 فحص المفاتيح من Render:');
-    console.log('Binance API:', BINANCE_API_KEY ? '✅' : '❌');
-    console.log('Binance Secret:', BINANCE_SECRET_KEY ? '✅' : '❌');
-    console.log('Telegram Token:', TELEGRAM_BOT_TOKEN ? '✅' : '❌');
-    console.log('Telegram Chat ID:', TELEGRAM_CHAT_ID ? '✅' : '❌');
+    // لا نحتاج Binance API keys الآن
+    console.log('\n✅ البوت يستخدم مصادر عامة (بدون API Keys)');
+    console.log(`📊 الزوج: ${pairName} (${selectedPair})`);
     
     // رسالة البدء
-    const welcomeMessage = `
-⚡ <b>مرحباً بك في البوت الفوري!</b>
+    const startMsg = `
+🚀 <b>بوت إشارات التداول يعمل الآن!</b>
 
-🚀 <b>مميزات النظام:</b>
-• مراقبة وقت حقيقي مباشر
-• سرعة 100ms بين الفحوصات
-• إشارات فورية عند أي تغير
-• بدون فواصل زمنية
-• نظام تبريد ذكي
+✅ <b>المميزات:</b>
+• يستخدم مصادر بيانات عامة
+• لا يحتاج Binance API
+• مراقبة مستمرة
+• إشارات شراء/بيع
 
-📊 <b>الزوج الافتراضي:</b> Bitcoin OTC (BTCUSDT)
+📊 <b>الزوج النشط:</b> ${pairName}
+💰 <b>الرمز:</b> ${selectedPair}
+⚡ <b>السرعة:</b> فحص كل 2 ثانية
 
-<b>🎯 كيفية الاستخدام:</b>
-1. اختر الزوج من الأزرار
-2. اضغط "▶️ تشغيل فوري"  
-3. استلم الإشارات فورياً
+<b>📈 مصادر البيانات:</b>
+• CoinGecko API
+• CoinMarketCap  
+• Binance Public
+• Bybit Public
 
-<i>⚡ جاهز للمراقبة الفورية...</i>
-    `;
+<i>⚡ جاري بدء المراقبة...</i>
+`;
     
-    await sendTelegramMessage(welcomeMessage, createCommandKeyboard());
-    console.log('\n✅ تم إرسال رسالة الترحيب');
+    await sendTelegram(startMsg);
+    console.log('\n✅ تم إرسال رسالة البدء');
     
-    console.log('\n⚡ بدأ المراقبة الفورية...');
-    console.log('━'.repeat(40));
-    
-    // بدء المراقبة الفورية في خلفية
-    startRealtimeMonitoring().catch(error => {
-        console.error('❌ خطأ فادح في المراقبة:', error);
+    // بدء المراقبة
+    monitorMarket().catch(error => {
+        console.error('❌ خطأ فادح:', error);
     });
-    
-    // تحديث حالة النظام
-    setInterval(() => {
-        const now = new Date();
-        console.log(`⏰ ${now.toLocaleTimeString('ar-SA')} | الزوج: ${SELECTED_PAIR_NAME} | السعر: ${LAST_PRICE || 'جاري...'}`);
-    }, 10000);
 }
 
 // ========== تشغيل البوت ==========
