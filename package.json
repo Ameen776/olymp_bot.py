@@ -1,7 +1,7 @@
 {
-  "name": "binance-signal-proxy",
-  "version": "1.0.0",
-  "description": "Binance Signal Bot with Proxy",
+  "name": "olymp-signal-bot",
+  "version": "2.0.0",
+  "description": "Olymp Trade Signal Bot with Realistic Simulation",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
