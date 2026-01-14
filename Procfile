@@ -1,1 +1,1 @@
-worker: python _bot.py
+worker: python olymp_bot.py
