@@ -1,16 +1,17 @@
-// ========== البوت الذي تتحكم فيه أنت ==========
+// ========== البوت النهائي - إشارات فقط بدون ضجيج ==========
 
-// المفاتيح من Render
 const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-// حالة البوت - كل شيء متوقف في البداية
+// حالة البوت
 let bot = {
-    active: false,      // البوت متوقف
-    pair: null,         // لا زوج محدد
-    monitoring: false,  // لا مراقبة
-    signals: 0
+    pair: null,          // الزوج المختار
+    monitoring: false,   // هل المراقبة نشطة؟
+    signals: 0           // عدد الإشارات المرسلة
 };
+
+// فترات الإشارات المطلوبة (بالثواني)
+const SIGNAL_INTERVALS = [15, 30, 45, 60, 120, 180, 240, 300, 420, 600];
 
 // ========== إرسال رسالة فقط ==========
 async function send(msg) {
@@ -33,14 +34,13 @@ async function send(msg) {
     }
 }
 
-// ========== عرض لوحة الأوامر ==========
+// ========== لوحة الأوامر الأساسية ==========
 async function showMenu() {
-    if (!TOKEN || !CHAT_ID) return;
-    
     const keyboard = {
         keyboard: [
             ["🚀 BTC", "🌀 XRP"],
-            ["⚡ SOL", "💵 AUD/CAD"]
+            ["⚡ SOL", "💵 AUD/CAD"],
+            ["▶️ بدء الإشارات", "⏸️ إيقاف الإشارات"]
         ],
         resize_keyboard: true
     };
@@ -51,32 +51,7 @@ async function showMenu() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             chat_id: CHAT_ID,
-            text: "🎯 <b>اختر الزوج الذي تريد مراقبته:</b>",
-            parse_mode: 'HTML',
-            reply_markup: keyboard
-        })
-    });
-}
-
-// ========== عرض لوحة التحكم بعد اختيار الزوج ==========
-async function showControlMenu() {
-    const keyboard = {
-        keyboard: [
-            ["▶️ بدء المراقبة"],
-            ["⏸️ إيقاف المراقبة"],
-            ["📊 عرض حالة"],
-            ["🔄 تغيير الزوج"]
-        ],
-        resize_keyboard: true
-    };
-    
-    const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
-    await fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            chat_id: CHAT_ID,
-            text: "🎮 <b>لوحة التحكم</b>\nاختر الإجراء الذي تريد:",
+            text: "🎯 <b>اختر الزوج:</b>",
             parse_mode: 'HTML',
             reply_markup: keyboard
         })
@@ -87,89 +62,106 @@ async function showControlMenu() {
 async function handleCommand(cmd) {
     console.log("📝 أمر:", cmd);
     
-    // 1. اختيار الزوج
+    // اختيار الزوج
     if (cmd === "🚀 BTC") {
         bot.pair = "BTC";
-        await send("✅ <b>تم اختيار Bitcoin</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
-        await showControlMenu();
+        await send("✅ <b>Bitcoin</b>");
     }
     else if (cmd === "🌀 XRP") {
         bot.pair = "XRP";
-        await send("✅ <b>تم اختيار Ripple</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
-        await showControlMenu();
+        await send("✅ <b>Ripple</b>");
     }
     else if (cmd === "⚡ SOL") {
         bot.pair = "SOL";
-        await send("✅ <b>تم اختيار Solana</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
-        await showControlMenu();
+        await send("✅ <b>Solana</b>");
     }
     else if (cmd === "💵 AUD/CAD") {
         bot.pair = "AUDCAD";
-        await send("✅ <b>تم اختيار AUD/CAD</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
-        await showControlMenu();
+        await send("✅ <b>AUD/CAD</b>");
     }
     
-    // 2. بدء المراقبة
-    else if (cmd === "▶️ بدء المراقبة") {
+    // بدء الإشارات
+    else if (cmd === "▶️ بدء الإشارات") {
         if (!bot.pair) {
-            await send("⚠️ <b>اختر زوج أولاً</b>");
-            await showMenu();
+            await send("⚠️ اختر زوج أولاً");
             return;
         }
         
-        bot.active = true;
         bot.monitoring = true;
-        await send(`📡 <b>بدأت مراقبة ${bot.pair}</b>\nستصلك الإشارات الآن...`);
+        // لا ترسل رسالة "بدأت المراقبة" - فقط تبدأ الإشارات
+        console.log("📡 بدأت الإشارات لـ", bot.pair);
     }
     
-    // 3. إيقاف المراقبة
-    else if (cmd === "⏸️ إيقاف المراقبة") {
+    // إيقاف الإشارات
+    else if (cmd === "⏸️ إيقاف الإشارات") {
         bot.monitoring = false;
-        await send("⏸️ <b>توقفت المراقبة</b>\nلا مزيد من الإشارات");
-    }
-    
-    // 4. عرض الحالة
-    else if (cmd === "📊 عرض حالة") {
-        const status = bot.monitoring ? "▶️ جارية" : "⏸️ متوقفة";
-        const pair = bot.pair || "لم يتم الاختيار";
-        
-        await send(`
-📊 <b>حالة النظام</b>
-──────────────
-<b>📊 الزوج:</b> ${pair}
-<b>🔄 المراقبة:</b> ${status}
-<b>📈 الإشارات:</b> ${bot.signals}
-──────────────
-        `);
-    }
-    
-    // 5. تغيير الزوج
-    else if (cmd === "🔄 تغيير الزوج") {
-        bot.monitoring = false;
-        bot.pair = null;
-        await send("🔄 <b>اختر زوج جديد:</b>");
-        await showMenu();
+        await send("⏸️");
     }
 }
 
 // ========== توليد إشارة قصيرة ==========
-async function sendSignal() {
+async function generateSignal(interval) {
     if (!bot.monitoring || !bot.pair) return;
     
     bot.signals++;
     
-    // إشارة شراء أو بيع
+    // تحويل الثواني إلى وقت مقروء
+    let intervalText;
+    if (interval < 60) {
+        intervalText = `${interval}ث`;
+    } else {
+        intervalText = `${Math.floor(interval / 60)}د`;
+    }
+    
+    // 50% شراء، 50% بيع
     const isBuy = Math.random() > 0.5;
-    const duration = [30, 45, 60, 90, 120][Math.floor(Math.random() * 5)];
     const time = new Date().toLocaleTimeString('ar-SA').slice(0, 5);
     
-    // رسالة مختصرة جداً
+    // إشارة قصيرة جداً
     const signal = isBuy 
-        ? `🟢 ${bot.pair}\nشراء ${duration}ث\n${time}`
-        : `🔴 ${bot.pair}\nبيع ${duration}ث\n${time}`;
+        ? `🟢 ${bot.pair}\nشراء ${intervalText}\n${time}`
+        : `🔴 ${bot.pair}\nبيع ${intervalText}\n${time}`;
     
     await send(signal);
-    console.log(`✅ ${bot.signals}: ${isBuy ? 'شراء' : 'بيع'} ${bot.pair} ${duration}ث`);
+    console.log(`✅ ${bot.signals}: ${isBuy ? 'شراء' : 'بيع'} ${bot.pair} ${intervalText}`);
+}
+
+// ========== نظام توقيت الإشارات ==========
+async function startSignalSystem() {
+    let lastSignalTimes = {};
+    
+    while (true) {
+        try {
+            // التحقق من الأوامر
+            await checkCommands();
+            
+            // إذا المراقبة نشطة
+            if (bot.monitoring && bot.pair) {
+                const now = Date.now();
+                
+                // فحص كل فترات الإشارات
+                for (const interval of SIGNAL_INTERVALS) {
+                    const lastTime = lastSignalTimes[interval] || 0;
+                    
+                    // إذا حان وقت هذه الفترة
+                    if (now - lastTime >= interval * 1000) {
+                        await generateSignal(interval);
+                        lastSignalTimes[interval] = now;
+                        
+                        // تأخير بسيط بين الإشارات المتزامنة
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                }
+            }
+            
+            // انتظار قصير
+            await new Promise(r => setTimeout(r, 1000));
+            
+        } catch (error) {
+            console.log("⚠️ خطأ:", error.message);
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
 }
 
 // ========== التحقق من الأوامر ==========
@@ -200,37 +192,12 @@ async function start() {
         return;
     }
     
-    // فقط عرض قائمة الأزواج
+    // عرض القائمة فقط
     await showMenu();
-    console.log("✅ تم عرض قائمة الأزواج");
+    console.log("✅ جاهز للاستخدام");
     
-    let lastSignalTime = 0;
-    
-    // الحلقة الرئيسية
-    while (true) {
-        try {
-            // 1. تحقق من الأوامر فقط
-            await checkCommands();
-            
-            // 2. إذا المراقبة مفعلة، أرسل إشارة كل 30-60 ثانية
-            if (bot.monitoring && bot.pair) {
-                const now = Date.now();
-                const interval = 30000 + Math.random() * 30000; // 30-60 ثانية
-                
-                if (now - lastSignalTime >= interval) {
-                    await sendSignal();
-                    lastSignalTime = now;
-                }
-            }
-            
-            // 3. انتظار 1 ثانية
-            await new Promise(r => setTimeout(r, 1000));
-            
-        } catch (error) {
-            console.log("⚠️ خطأ:", error.message);
-            await new Promise(r => setTimeout(r, 5000));
-        }
-    }
+    // بدء نظام الإشارات
+    startSignalSystem();
 }
 
 // ========== التشغيل ==========
