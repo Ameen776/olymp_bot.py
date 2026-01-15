@@ -1,23 +1,21 @@
-// ========== البوت النهائي - بسيط ونظيف ==========
+// ========== البوت الذي تتحكم فيه أنت ==========
 
 // المفاتيح من Render
 const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-// حالة البوت
+// حالة البوت - كل شيء متوقف في البداية
 let bot = {
-    active: false,      // البوت متوقف في البداية
+    active: false,      // البوت متوقف
     pair: null,         // لا زوج محدد
-    signals: 0          // عداد الإشارات
+    monitoring: false,  // لا مراقبة
+    signals: 0
 };
 
-// ========== إرسال رسالة ==========
+// ========== إرسال رسالة فقط ==========
 async function send(msg) {
-    if (!TOKEN || !CHAT_ID) {
-        console.log("❌ أضف TOKEN و CHAT_ID في Render");
-        return false;
-    }
-
+    if (!TOKEN || !CHAT_ID) return false;
+    
     try {
         const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
         const res = await fetch(url, {
@@ -29,34 +27,56 @@ async function send(msg) {
                 parse_mode: 'HTML'
             })
         });
-        
         return res.ok;
     } catch (e) {
-        console.log("⚠️ خطأ:", e.message);
         return false;
     }
 }
 
-// ========== لوحة الأوامر البسيطة ==========
-async function sendMainMenu() {
+// ========== عرض لوحة الأوامر ==========
+async function showMenu() {
+    if (!TOKEN || !CHAT_ID) return;
+    
     const keyboard = {
         keyboard: [
             ["🚀 BTC", "🌀 XRP"],
-            ["⚡ SOL", "💵 AUD/CAD"],
-            ["▶️ تشغيل البوت", "⏸️ إيقاف البوت"],
-            ["📊 حالة البوت"]
+            ["⚡ SOL", "💵 AUD/CAD"]
         ],
-        resize_keyboard: true,
-        one_time_keyboard: false
+        resize_keyboard: true
     };
-
+    
     const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
     await fetch(url, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             chat_id: CHAT_ID,
-            text: "🎯 <b>اختر الزوج ثم شغل البوت</b>",
+            text: "🎯 <b>اختر الزوج الذي تريد مراقبته:</b>",
+            parse_mode: 'HTML',
+            reply_markup: keyboard
+        })
+    });
+}
+
+// ========== عرض لوحة التحكم بعد اختيار الزوج ==========
+async function showControlMenu() {
+    const keyboard = {
+        keyboard: [
+            ["▶️ بدء المراقبة"],
+            ["⏸️ إيقاف المراقبة"],
+            ["📊 عرض حالة"],
+            ["🔄 تغيير الزوج"]
+        ],
+        resize_keyboard: true
+    };
+    
+    const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
+    await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            chat_id: CHAT_ID,
+            text: "🎮 <b>لوحة التحكم</b>\nاختر الإجراء الذي تريد:",
             parse_mode: 'HTML',
             reply_markup: keyboard
         })
@@ -67,66 +87,80 @@ async function sendMainMenu() {
 async function handleCommand(cmd) {
     console.log("📝 أمر:", cmd);
     
-    // اختيار الزوج
+    // 1. اختيار الزوج
     if (cmd === "🚀 BTC") {
         bot.pair = "BTC";
-        await send("✅ <b>تم اختيار Bitcoin</b>\nالآن اضغط '▶️ تشغيل البوت'");
+        await send("✅ <b>تم اختيار Bitcoin</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
+        await showControlMenu();
     }
     else if (cmd === "🌀 XRP") {
         bot.pair = "XRP";
-        await send("✅ <b>تم اختيار Ripple</b>\nالآن اضغط '▶️ تشغيل البوت'");
+        await send("✅ <b>تم اختيار Ripple</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
+        await showControlMenu();
     }
     else if (cmd === "⚡ SOL") {
         bot.pair = "SOL";
-        await send("✅ <b>تم اختيار Solana</b>\nالآن اضغط '▶️ تشغيل البوت'");
+        await send("✅ <b>تم اختيار Solana</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
+        await showControlMenu();
     }
     else if (cmd === "💵 AUD/CAD") {
         bot.pair = "AUDCAD";
-        await send("✅ <b>تم اختيار AUD/CAD</b>\nالآن اضغط '▶️ تشغيل البوت'");
+        await send("✅ <b>تم اختيار AUD/CAD</b>\nالآن استخدم '▶️ بدء المراقبة' لبدء الإشارات");
+        await showControlMenu();
     }
     
-    // تشغيل البوت
-    else if (cmd === "▶️ تشغيل البوت") {
+    // 2. بدء المراقبة
+    else if (cmd === "▶️ بدء المراقبة") {
         if (!bot.pair) {
-            await send("⚠️ <b>اختر زوج أولاً</b>\nاضغط على BTC, XRP, SOL أو AUD/CAD");
+            await send("⚠️ <b>اختر زوج أولاً</b>");
+            await showMenu();
             return;
         }
         
         bot.active = true;
-        await send(`▶️ <b>تم تشغيل البوت</b>\n📊 يراقب: ${bot.pair}\n⏱️ الإشارات كل 30-60 ثانية`);
+        bot.monitoring = true;
+        await send(`📡 <b>بدأت مراقبة ${bot.pair}</b>\nستصلك الإشارات الآن...`);
     }
     
-    // إيقاف البوت
-    else if (cmd === "⏸️ إيقاف البوت") {
-        bot.active = false;
-        await send("⏸️ <b>تم إيقاف البوت</b>");
+    // 3. إيقاف المراقبة
+    else if (cmd === "⏸️ إيقاف المراقبة") {
+        bot.monitoring = false;
+        await send("⏸️ <b>توقفت المراقبة</b>\nلا مزيد من الإشارات");
     }
     
-    // حالة البوت
-    else if (cmd === "📊 حالة البوت") {
-        const status = bot.active ? "▶️ مشغل" : "⏸️ متوقف";
-        const pair = bot.pair ? bot.pair : "لم يتم الاختيار";
+    // 4. عرض الحالة
+    else if (cmd === "📊 عرض حالة") {
+        const status = bot.monitoring ? "▶️ جارية" : "⏸️ متوقفة";
+        const pair = bot.pair || "لم يتم الاختيار";
         
         await send(`
-📊 <b>حالة البوت</b>
+📊 <b>حالة النظام</b>
 ──────────────
-<b>🔄 الحالة:</b> ${status}
 <b>📊 الزوج:</b> ${pair}
+<b>🔄 المراقبة:</b> ${status}
 <b>📈 الإشارات:</b> ${bot.signals}
 ──────────────
-`);
+        `);
+    }
+    
+    // 5. تغيير الزوج
+    else if (cmd === "🔄 تغيير الزوج") {
+        bot.monitoring = false;
+        bot.pair = null;
+        await send("🔄 <b>اختر زوج جديد:</b>");
+        await showMenu();
     }
 }
 
 // ========== توليد إشارة قصيرة ==========
 async function sendSignal() {
-    if (!bot.active || !bot.pair) return;
+    if (!bot.monitoring || !bot.pair) return;
     
     bot.signals++;
     
-    // إشارة شراء أو بيع عشوائية
+    // إشارة شراء أو بيع
     const isBuy = Math.random() > 0.5;
-    const duration = [30, 45, 60, 90][Math.floor(Math.random() * 4)];
+    const duration = [30, 45, 60, 90, 120][Math.floor(Math.random() * 5)];
     const time = new Date().toLocaleTimeString('ar-SA').slice(0, 5);
     
     // رسالة مختصرة جداً
@@ -159,41 +193,37 @@ async function checkCommands() {
 
 // ========== البداية ==========
 async function start() {
-    console.log("🚀 بدأ البوت...");
-    console.log("TOKEN:", TOKEN ? "✅" : "❌");
-    console.log("CHAT_ID:", CHAT_ID ? "✅" : "❌");
+    console.log("🤖 البوت يبدأ...");
     
     if (!TOKEN || !CHAT_ID) {
-        console.log("\n❌ أضف في Render:");
-        console.log("TOKEN: توكن البوت");
-        console.log("CHAT_ID: رقم المحادثة");
+        console.log("❌ أضف TOKEN و CHAT_ID في Render");
         return;
     }
     
-    // إرسال لوحة الأوامر
-    await sendMainMenu();
-    console.log("✅ تم إرسال لوحة الأوامر");
+    // فقط عرض قائمة الأزواج
+    await showMenu();
+    console.log("✅ تم عرض قائمة الأزواج");
+    
+    let lastSignalTime = 0;
     
     // الحلقة الرئيسية
-    let lastSignal = 0;
-    
     while (true) {
         try {
-            // 1. تحقق من الأوامر
+            // 1. تحقق من الأوامر فقط
             await checkCommands();
             
-            // 2. إذا البوت شغال وزوج محدد، أرسل إشارة
-            if (bot.active && bot.pair) {
+            // 2. إذا المراقبة مفعلة، أرسل إشارة كل 30-60 ثانية
+            if (bot.monitoring && bot.pair) {
                 const now = Date.now();
                 const interval = 30000 + Math.random() * 30000; // 30-60 ثانية
                 
-                if (now - lastSignal >= interval) {
+                if (now - lastSignalTime >= interval) {
                     await sendSignal();
-                    lastSignal = now;
+                    lastSignalTime = now;
                 }
             }
             
-            // 3. انتظر 1 ثانية
+            // 3. انتظار 1 ثانية
             await new Promise(r => setTimeout(r, 1000));
             
         } catch (error) {
