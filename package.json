@@ -1,0 +1,32 @@
+{
+  "name": "trading-signal-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for trading signals with AI",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": ["trading", "bot", "telegram", "ai", "signals"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0",
+    "crypto-js": "^4.2.0",
+    "winston": "^3.11.0",
+    "moment": "^2.29.4",
+    "ccxt": "^4.1.5",
+    "openai": "^4.20.0",
+    "@google/generative-ai": "^0.1.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
