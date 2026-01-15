@@ -1,13 +1,13 @@
 {
-  "name": "smart-prediction-bot",
+  "name": "interactive-signal-bot",
   "version": "1.0.0",
-  "description": "AI Prediction Algorithm for Trading",
-  "main": "algo.js",
+  "description": "Interactive Trading Bot with Commands",
+  "main": "bot.js",
   "scripts": {
-    "start": "node algo.js"
+    "start": "node bot.js"
   },
   "dependencies": {
-    "axios": "^1.6.0"
+    "node-fetch": "^2.6.7"
   },
   "engines": {
     "node": "18.x"
