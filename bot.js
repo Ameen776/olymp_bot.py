@@ -1,60 +1,29 @@
-// ========== البوت التفاعلي مع الأوامر ==========
-const fetch = require('node-fetch');
+// ========== البوت البسيط مع تحكم كامل ==========
 
-// ========== المفاتيح من Render ==========
-const TOKEN = process.env.TELEGRAM_TOKEN;
+// المفاتيح من Render
+const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-// ========== حالة البوت ==========
-let botState = {
-    active: true,
-    signalsSent: 0,
-    selectedPair: 'BTCOTC',
-    signalInterval: 30000, // 30 ثانية
-    lastSignal: null,
-    userCommands: {}
+// حالة البوت
+let bot = {
+    active: false,           // البوت متوقف في البداية
+    pair: "BTCOTC",          // الزوج الافتراضي
+    interval: 30000,         // 30 ثانية افتراضياً
+    signals: 0              // عدد الإشارات
 };
 
-// ========== قائمة الأزواج ==========
-const TRADING_PAIRS = [
-    { id: 'BTCOTC', name: 'Bitcoin OTC', emoji: '🚀' },
-    { id: 'XRPOTC', name: 'Ripple OTC', emoji: '🌀' },
-    { id: 'SOLOTC', name: 'Solana OTC', emoji: '⚡' },
-    { id: 'AUDCADOTC', name: 'AUD/CAD OTC', emoji: '💵' }
-];
+// الأزواج المتاحة
+const PAIRS = {
+    "BTCOTC": "₿ Bitcoin",
+    "XRPOTC": "🌀 Ripple", 
+    "SOLOTC": "⚡ Solana",
+    "AUDCADOTC": "💵 AUD/CAD"
+};
 
-// ========== لوحة الأوامر ==========
-function createKeyboard() {
-    return {
-        inline_keyboard: [
-            [
-                { text: '🚀 BTC', callback_data: 'pair_BTCOTC' },
-                { text: '🌀 XRP', callback_data: 'pair_XRPOTC' },
-                { text: '⚡ SOL', callback_data: 'pair_SOLOTC' }
-            ],
-            [
-                { text: '💵 AUD/CAD', callback_data: 'pair_AUDCADOTC' }
-            ],
-            [
-                { text: '▶️ تشغيل', callback_data: 'start' },
-                { text: '⏸️ إيقاف', callback_data: 'stop' }
-            ],
-            [
-                { text: '⚙️ الإعدادات', callback_data: 'settings' },
-                { text: '📊 الإحصائيات', callback_data: 'stats' }
-            ],
-            [
-                { text: '📈 إشارة الآن', callback_data: 'signal_now' },
-                { text: '🔄 تغيير الفاصل', callback_data: 'change_interval' }
-            ]
-        ]
-    };
-}
-
-// ========== إرسال رسالة مع أزرار ==========
-async function sendMessage(text, keyboard = null) {
+// ========== إرسال رسالة ==========
+async function send(msg, keyboard = null) {
     if (!TOKEN || !CHAT_ID) {
-        console.log('❌ مفاتيح Telegram مفقودة');
+        console.log("❌ أضف TOKEN و CHAT_ID في Render");
         return false;
     }
 
@@ -62,341 +31,172 @@ async function sendMessage(text, keyboard = null) {
         const url = `https://api.telegram.org/bot${TOKEN}/sendMessage`;
         const body = {
             chat_id: CHAT_ID,
-            text: text,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true
+            text: msg,
+            parse_mode: 'HTML'
         };
-
-        if (keyboard) {
-            body.reply_markup = keyboard;
-        }
-
-        const response = await fetch(url, {
+        
+        if (keyboard) body.reply_markup = keyboard;
+        
+        const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(body)
         });
-
-        return response.ok;
-    } catch (error) {
-        console.log('⚠️ خطأ في إرسال الرسالة:', error.message);
+        
+        return res.ok;
+    } catch (e) {
+        console.log("⚠️ خطأ:", e.message);
         return false;
     }
 }
 
-// ========== تحديث الرسالة ==========
-async function editMessage(messageId, newText, keyboard = null) {
-    try {
-        const url = `https://api.telegram.org/bot${TOKEN}/editMessageText`;
-        const body = {
-            chat_id: CHAT_ID,
-            message_id: messageId,
-            text: newText,
-            parse_mode: 'HTML'
-        };
-
-        if (keyboard) {
-            body.reply_markup = keyboard;
-        }
-
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-        });
-
-        return response.ok;
-    } catch (error) {
-        console.log('⚠️ خطأ في تحديث الرسالة:', error.message);
-        return false;
-    }
+// ========== لوحة التحكم ==========
+function getKeyboard() {
+    return {
+        inline_keyboard: [
+            [
+                { text: '₿ BTC', callback_data: 'BTCOTC' },
+                { text: '🌀 XRP', callback_data: 'XRPOTC' },
+                { text: '⚡ SOL', callback_data: 'SOLOTC' }
+            ],
+            [
+                { text: '💵 AUD/CAD', callback_data: 'AUDCADOTC' }
+            ],
+            [
+                { text: bot.active ? '⏸️ إيقاف' : '▶️ تشغيل', 
+                  callback_data: bot.active ? 'stop' : 'start' }
+            ],
+            [
+                { text: '⚙️ الإعدادات', callback_data: 'settings' }
+            ]
+        ]
+    };
 }
 
 // ========== معالجة الأوامر ==========
-async function handleCommand(command, messageId = null) {
-    console.log(`📝 معالجة الأمر: ${command}`);
-
-    switch (command) {
-        case 'start':
-            botState.active = true;
-            await sendMessage('✅ <b>تم تشغيل البوت!</b>\nالإشارات ستبدأ بالوصول...', createKeyboard());
-            break;
-
-        case 'stop':
-            botState.active = false;
-            await sendMessage('⏸️ <b>تم إيقاف البوت مؤقتاً</b>\nالإشارات متوقفة...', createKeyboard());
-            break;
-
-        case 'settings':
-            await showSettings(messageId);
-            break;
-
-        case 'stats':
-            await showStats(messageId);
-            break;
-
-        case 'signal_now':
-            await generateSignal(true);
-            break;
-
-        case 'change_interval':
-            await changeInterval(messageId);
-            break;
-
-        default:
-            if (command.startsWith('pair_')) {
-                const pairId = command.replace('pair_', '');
-                await changePair(pairId, messageId);
-            }
-    }
-}
-
-// ========== عرض الإعدادات ==========
-async function showSettings(messageId) {
-    const settingsText = `
-⚙️ <b>إعدادات البوت</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>🔄 الحالة:</b> ${botState.active ? '🟢 نشط' : '🔴 متوقف'}
-<b>📊 الزوج النشط:</b> ${botState.selectedPair}
-<b>⏱️ الفاصل الزمني:</b> ${botState.signalInterval / 1000} ثانية
-<b>🎯 الإشارات المرسلة:</b> ${botState.signalsSent}
-━━━━━━━━━━━━━━━━━━━━
-<b>📈 الأزواج المتاحة:</b>
-${TRADING_PAIRS.map(p => 
-    `• ${p.emoji} ${p.name} ${p.id === botState.selectedPair ? '✅' : ''}`
-).join('\n')}
-━━━━━━━━━━━━━━━━━━━━
-<i>استخدم الأزرار للتحكم في البوت</i>
-`;
-
-    if (messageId) {
-        await editMessage(messageId, settingsText, createKeyboard());
-    } else {
-        await sendMessage(settingsText, createKeyboard());
-    }
-}
-
-// ========== عرض الإحصائيات ==========
-async function showStats(messageId) {
-    const statsText = `
-📊 <b>إحصائيات البوت</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>📈 الإشارات المرسلة:</b> ${botState.signalsSent}
-<b>🎯 الزوج النشط:</b> ${botState.selectedPair}
-<b>⏱️ الفاصل الحالي:</b> ${botState.signalInterval / 1000} ثانية
-<b>🔄 الحالة:</b> ${botState.active ? '🟢 نشط' : '🔴 متوقف'}
-<b>🕐 آخر إشارة:</b> ${botState.lastSignal ? new Date(botState.lastSignal).toLocaleTimeString('ar-SA') : 'لا يوجد'}
-━━━━━━━━━━━━━━━━━━━━
-<b>📅 نشاط اليوم:</b>
-• الإشارات: ${botState.signalsSent}
-• الأزواج: ${TRADING_PAIRS.length}
-• الدقة: ${Math.min(95, 70 + Math.random() * 25).toFixed(1)}%
-━━━━━━━━━━━━━━━━━━━━
-<i>البوت يعمل بشكل مستمر على Render</i>
-`;
-
-    if (messageId) {
-        await editMessage(messageId, statsText, createKeyboard());
-    } else {
-        await sendMessage(statsText, createKeyboard());
-    }
-}
-
-// ========== تغيير الزوج ==========
-async function changePair(pairId, messageId) {
-    const pair = TRADING_PAIRS.find(p => p.id === pairId);
-    if (pair) {
-        botState.selectedPair = pairId;
-        
-        const message = `
-✅ <b>تم تغيير الزوج النشط</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>📊 الزوج الجديد:</b> ${pair.name}
-<b>${pair.emoji} الرمز:</b> ${pairId}
-<b>🔄 الحالة:</b> ${botState.active ? '🟢 نشط' : '🔴 متوقف'}
-━━━━━━━━━━━━━━━━━━━━
-<i>الإشارات القادمة ستكون لهذا الزوج</i>
-`;
-
-        if (messageId) {
-            await editMessage(messageId, message, createKeyboard());
-        } else {
-            await sendMessage(message, createKeyboard());
-        }
-    }
-}
-
-// ========== تغيير الفاصل الزمني ==========
-async function changeInterval(messageId) {
-    const intervals = [
-        { time: 15000, label: '15 ثانية' },
-        { time: 30000, label: '30 ثانية' },
-        { time: 45000, label: '45 ثانية' },
-        { time: 60000, label: '60 ثانية' }
-    ];
-
-    const intervalKeyboard = {
-        inline_keyboard: [
-            intervals.map(interval => ({
-                text: interval.label,
-                callback_data: `interval_${interval.time}`
-            })),
-            [{ text: '🔙 رجوع', callback_data: 'settings' }]
-        ]
-    };
-
-    const message = `
-⏱️ <b>تغيير الفاصل الزمني</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>الفاصل الحالي:</b> ${botState.signalInterval / 1000} ثانية
-━━━━━━━━━━━━━━━━━━━━
-<i>اختر الفاصل الجديد:</i>
-`;
-
-    if (messageId) {
-        await editMessage(messageId, message, intervalKeyboard);
-    } else {
-        await sendMessage(message, intervalKeyboard);
-    }
-}
-
-// ========== توليد إشارة ==========
-async function generateSignal(isManual = false) {
-    if (!botState.active && !isManual) return;
-
-    const pairs = {
-        'BTCOTC': { price: 42000 + Math.random() * 2000, volatility: 'عالية' },
-        'XRPOTC': { price: 0.5 + Math.random() * 0.2, volatility: 'متوسطة' },
-        'SOLOTC': { price: 100 + Math.random() * 50, volatility: 'عالية' },
-        'AUDCADOTC': { price: 0.88 + Math.random() * 0.04, volatility: 'منخفضة' }
-    };
-
-    const pairData = pairs[botState.selectedPair];
-    const action = Math.random() > 0.5 ? 'BUY' : 'SELL';
-    const price = pairData.price.toFixed(4);
-    const confidence = Math.floor(Math.random() * 25) + 70; // 70-95%
+async function handleCommand(cmd) {
+    console.log("📝 أمر:", cmd);
     
-    const targetPrice = action === 'BUY' 
-        ? (parseFloat(price) * 1.01).toFixed(4)
-        : (parseFloat(price) * 0.99).toFixed(4);
-    
-    const stopLoss = action === 'BUY'
-        ? (parseFloat(price) * 0.995).toFixed(4)
-        : (parseFloat(price) * 1.005).toFixed(4);
-
-    const signalNumber = ++botState.signalsSent;
-    botState.lastSignal = Date.now();
-
-    const signalText = `
-${action === 'BUY' ? '🟢' : '🔴'} <b>${isManual ? 'إشارة يدوية' : 'إشارة تلقائية'} #${signalNumber}</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>📊 الزوج:</b> ${botState.selectedPair}
-<b>🎯 الإجراء:</b> ${action === 'BUY' ? 'شراء' : 'بيع'}
-<b>📈 الثقة:</b> ${confidence}%
-<b>⚡ التقلبية:</b> ${pairData.volatility}
-━━━━━━━━━━━━━━━━━━━━
-<b>💵 السعر:</b> $${price}
-<b>🎯 الهدف:</b> $${targetPrice}
-<b>🛑 وقف الخسارة:</b> $${stopLoss}
-<b>⏱️ المدة المقترحة:</b> 60 ثانية
-━━━━━━━━━━━━━━━━━━━━
-<i>${isManual ? 'إشارة يدوية من المستخدم' : 'إشارة آلية من البوت'}</i>
+    if (PAIRS[cmd]) {
+        // تغيير الزوج
+        bot.pair = cmd;
+        await send(`✅ <b>تم اختيار ${PAIRS[cmd]}</b>\nالزوج النشط الآن: ${cmd}`, getKeyboard());
+    }
+    else if (cmd === 'start') {
+        // تشغيل البوت
+        bot.active = true;
+        await send(`▶️ <b>تم تشغيل البوت</b>\n📊 يراقب: ${bot.pair}\n⏱️ كل: ${bot.interval/1000}ث`, getKeyboard());
+    }
+    else if (cmd === 'stop') {
+        // إيقاف البوت
+        bot.active = false;
+        await send(`⏸️ <b>تم إيقاف البوت</b>`, getKeyboard());
+    }
+    else if (cmd === 'settings') {
+        // عرض الإعدادات
+        const settings = `
+⚙️ <b>الإعدادات الحالية</b>
+──────────────
+<b>🔄 الحالة:</b> ${bot.active ? '▶️ تشغيل' : '⏸️ إيقاف'}
+<b>📊 الزوج:</b> ${bot.pair} (${PAIRS[bot.pair]})
+<b>⏱️ الفاصل:</b> ${bot.interval/1000} ثانية
+<b>📈 الإشارات:</b> ${bot.signals}
+──────────────
+<i>انقر على الأزرار للتحكم</i>
 `;
-
-    await sendMessage(signalText, createKeyboard());
-    console.log(`✅ ${isManual ? 'يدوية' : 'تلقائية'} #${signalNumber}: ${action} ${botState.selectedPair}`);
+        await send(settings, getKeyboard());
+    }
 }
 
-// ========== معالجة الردود من الأزرار ==========
-async function checkUpdates() {
+// ========== توليد إشارة قصيرة ==========
+async function generateSignal() {
+    if (!bot.active) return;
+    
+    bot.signals++;
+    
+    const actions = ["BUY", "SELL"];
+    const action = actions[Math.floor(Math.random() * actions.length)];
+    const duration = [30, 60, 120, 180][Math.floor(Math.random() * 4)];
+    
+    // رسالة قصيرة جداً
+    const signal = `
+${action === "BUY" ? "🟢" : "🔴"} <b>${bot.pair}</b>
+${action === "BUY" ? "شراء" : "بيع"} | ⏱️${duration}ث
+${new Date().toLocaleTimeString('ar-SA').slice(0,5)}
+`;
+    
+    await send(signal, getKeyboard());
+    console.log(`✅ إشارة ${bot.signals}: ${action} ${bot.pair} ${duration}ث`);
+}
+
+// ========== التحقق من الأوامر ==========
+async function checkCommands() {
     try {
         const url = `https://api.telegram.org/bot${TOKEN}/getUpdates`;
-        const response = await fetch(url);
-        const data = await response.json();
-
+        const res = await fetch(url);
+        const data = await res.json();
+        
         if (data.ok && data.result.length > 0) {
             for (const update of data.result) {
                 if (update.callback_query) {
-                    const { data, message } = update.callback_query;
-                    
-                    // معالجة الفاصل الزمني
-                    if (data.startsWith('interval_')) {
-                        const interval = parseInt(data.replace('interval_', ''));
-                        botState.signalInterval = interval;
-                        
-                        await editMessage(message.message_id, 
-                            `✅ <b>تم تغيير الفاصل إلى ${interval / 1000} ثانية</b>`,
-                            createKeyboard()
-                        );
-                    } else {
-                        await handleCommand(data, message.message_id);
-                    }
+                    await handleCommand(update.callback_query.data);
                 }
             }
         }
-    } catch (error) {
-        console.log('⚠️ خطأ في التحقق من التحديثات:', error.message);
+    } catch (e) {
+        console.log("⚠️ خطأ في الأوامر:", e.message);
     }
 }
 
 // ========== البداية ==========
-async function startBot() {
-    console.log('🚀 بدأ تشغيل البوت التفاعلي...');
-    console.log('📱 TOKEN:', TOKEN ? '✅' : '❌');
-    console.log('💬 CHAT_ID:', CHAT_ID ? '✅' : '❌');
-
+async function start() {
+    console.log("🚀 بدأ البوت...");
+    console.log("TOKEN:", TOKEN ? "✅" : "❌");
+    console.log("CHAT_ID:", CHAT_ID ? "✅" : "❌");
+    
     if (!TOKEN || !CHAT_ID) {
-        console.log('\n❌ أضف في Render Environment Variables:');
-        console.log('1. TELEGRAM_TOKEN');
-        console.log('2. CHAT_ID');
+        console.log("\n❌ أضف في Render:");
+        console.log("TOKEN: توكن البوت");
+        console.log("CHAT_ID: رقم المحادثة");
         return;
     }
-
+    
     // رسالة البداية
-    await sendMessage(`
-🎉 <b>مرحباً بك في البوت التفاعلي!</b>
+    await send(`
+🎯 <b>بوت التداول البسيط</b>
 
-🤖 <b>مميزات النظام:</b>
-• لوحة تحكم كاملة بأزرار
-• إشارات تلقائية ويدوية
-• تغيير الأزواج والفترات
-• إحصائيات حية
+<b>📊 الزوج:</b> ${bot.pair}
+<b>🔄 الحالة:</b> ${bot.active ? '▶️ تشغيل' : '⏸️ إيقاف'}
 
-<b>⚡ الأوامر المتاحة:</b>
-🚀 BTC/XRP/SOL - اختيار الزوج
-▶️ تشغيل/⏸️ إيقاف - التحكم
-⚙️ الإعدادات - عرض الإعدادات
-📊 الإحصائيات - عرض الإحصائيات
-📈 إشارة الآن - إشارة يدوية
-
-<i>استخدم الأزرار للتحكم في البوت 👇</i>
-`, createKeyboard());
-
-    console.log('✅ تم إرسال رسالة الترحيب');
-
-    // حلقة الرئيسية
+<i>استخدم الأزرار للتحكم 👇</i>
+`, getKeyboard());
+    
+    console.log("✅ البوت جاهز. انتظر الأوامر...");
+    
+    // الحلقة الرئيسية
     while (true) {
         try {
-            // التحقق من الأوامر كل 2 ثانية
-            await checkUpdates();
-
-            // إرسال إشارة تلقائية إذا كان البوت نشط
-            if (botState.active) {
+            // 1. تحقق من الأوامر كل ثانية
+            await checkCommands();
+            
+            // 2. إذا البوت شغال، أرسل إشارة كل فترة
+            if (bot.active) {
                 const now = Date.now();
-                if (!botState.lastSignal || (now - botState.lastSignal) >= botState.signalInterval) {
-                    await generateSignal(false);
+                if (!bot.lastSignal || (now - bot.lastSignal) >= bot.interval) {
+                    await generateSignal();
+                    bot.lastSignal = now;
                 }
             }
-
-            // انتظار 2 ثانية قبل التكرار
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
+            
+            // 3. انتظر ثانية قبل التكرار
+            await new Promise(r => setTimeout(r, 1000));
+            
         } catch (error) {
-            console.log('⚠️ خطأ في الدورة الرئيسية:', error.message);
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            console.log("⚠️ خطأ:", error.message);
+            await new Promise(r => setTimeout(r, 5000));
         }
     }
 }
 
-// ========== بدء التشغيل ==========
-startBot().catch(console.error);
+// ========== التشغيل ==========
+start();
