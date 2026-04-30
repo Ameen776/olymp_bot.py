@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 # ⚠️ رابط السيرفر
-SERVER_URL = "https://dec4-2001-16a4-2f8-adf9-ac8c-c4f.ngrok-free.app"
+SERVER_URL = "https://0919-2001-16a4-2f8-adf9-ac8c-c4ff-fef6-f51.ngrok-free.app"
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 ASK_PIN, ASK_NOTIFY = 1, 2
